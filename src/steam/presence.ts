@@ -23,7 +23,7 @@ export function buildPresencePlan(configuration: AccountConfiguration): Presence
   return {
     baseGames,
     games: configuration.clearRecentActivity
-      ? [...baseGames, ...RECENT_ACTIVITY_APP_IDS]
+      ? [...RECENT_ACTIVITY_APP_IDS, ...baseGames]
       : baseGames,
     clearRecentActivity: configuration.clearRecentActivity
   };
@@ -46,22 +46,27 @@ export class PresenceController {
     }
     const revision = ++this.#revision;
     const plan = buildPresencePlan(configuration);
-    this.client.setPersona(
-      configuration.visible ? SteamUser.EPersonaState.Online : SteamUser.EPersonaState.Invisible
-    );
-
     if (!plan.clearRecentActivity) {
+      this.client.setPersona(
+        configuration.visible ? SteamUser.EPersonaState.Online : SteamUser.EPersonaState.Invisible
+      );
       this.client.gamesPlayed(plan.games);
       return;
     }
 
-    this.client.gamesPlayed(plan.baseGames);
+    // Keep helper apps hidden during the transition. Starting the configured games last makes
+    // Steam prefer the user's real activity for the visible "currently playing" slot.
+    this.client.setPersona(SteamUser.EPersonaState.Invisible);
+    this.client.gamesPlayed([...RECENT_ACTIVITY_APP_IDS]);
     await Promise.all([
       this.#requestRecentActivityLicenses().catch((error) => this.onLicenseError(error)),
       this.#delay()
     ]);
     if (!this.#disposed && revision === this.#revision) {
       this.client.gamesPlayed(plan.games);
+      this.client.setPersona(
+        configuration.visible ? SteamUser.EPersonaState.Online : SteamUser.EPersonaState.Invisible
+      );
     }
   }
 
