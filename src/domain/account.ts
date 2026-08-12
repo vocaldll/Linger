@@ -1,5 +1,6 @@
 export const MAX_GAMES_PLAYED = 32;
 export const MAX_CUSTOM_GAME_LENGTH = 128;
+export const RECENT_ACTIVITY_RESERVED_SLOTS = 4;
 
 export type AccountStatus =
   | "disabled"
@@ -19,6 +20,7 @@ export type Account = {
   appIds: number[];
   customGame: string | null;
   visible: boolean;
+  clearRecentActivity: boolean;
   enabled: boolean;
   revision: number;
   restartNonce: number;
@@ -34,7 +36,10 @@ export type NewAccount = Omit<
   "id" | "revision" | "restartNonce" | "status" | "lastError" | "lastConnectedAt" | "createdAt" | "updatedAt"
 >;
 
-export type AccountConfiguration = Pick<Account, "appIds" | "customGame" | "visible">;
+export type AccountConfiguration = Pick<
+  Account,
+  "appIds" | "customGame" | "visible" | "clearRecentActivity"
+>;
 
 export type RuntimePatch = Partial<
   Pick<Account, "steamId" | "status" | "lastError" | "lastConnectedAt" | "refreshTokenEncrypted" | "machineAuthTokenEncrypted">
@@ -71,11 +76,18 @@ export function validatePresence(configuration: AccountConfiguration): void {
     throw new Error(`Custom game name must be ${MAX_CUSTOM_GAME_LENGTH} characters or fewer`);
   }
   const slots = configuration.appIds.length + (customGame ? 1 : 0);
+  const availableSlots = configuration.clearRecentActivity
+    ? MAX_GAMES_PLAYED - RECENT_ACTIVITY_RESERVED_SLOTS
+    : MAX_GAMES_PLAYED;
   if (slots === 0) {
     throw new Error("Configure at least one AppID or a custom game name");
   }
-  if (slots > MAX_GAMES_PLAYED) {
-    throw new Error(`Steam supports at most ${MAX_GAMES_PLAYED} simultaneous games`);
+  if (slots > availableSlots) {
+    throw new Error(
+      configuration.clearRecentActivity
+        ? `Recent-activity clearing leaves room for at most ${availableSlots} games`
+        : `Steam supports at most ${MAX_GAMES_PLAYED} simultaneous games`
+    );
   }
   for (const appId of configuration.appIds) {
     if (!Number.isSafeInteger(appId) || appId <= 0 || appId > 0xffff_ffff) {

@@ -20,6 +20,7 @@ type AccountRow = {
   app_ids_json: string;
   custom_game: string | null;
   visible: number;
+  clear_recent_activity: number;
   enabled: number;
   revision: number;
   restart_nonce: number;
@@ -32,7 +33,7 @@ type AccountRow = {
 
 const ACCOUNT_COLUMNS = `
   id, account_name, steam_id, refresh_token_encrypted, machine_auth_token_encrypted,
-  app_ids_json, custom_game, visible, enabled, revision, restart_nonce, status,
+  app_ids_json, custom_game, visible, clear_recent_activity, enabled, revision, restart_nonce, status,
   last_error, last_connected_at, created_at, updated_at
 `;
 
@@ -54,6 +55,7 @@ function mapAccount(row: AccountRow): Account {
     appIds: parseAppIdsJson(row.app_ids_json),
     customGame: row.custom_game,
     visible: row.visible === 1,
+    clearRecentActivity: row.clear_recent_activity === 1,
     enabled: row.enabled === 1,
     revision: row.revision,
     restartNonce: row.restart_nonce,
@@ -108,9 +110,9 @@ export class AccountStore {
       .prepare(`
         INSERT INTO accounts (
           id, account_name, steam_id, refresh_token_encrypted, machine_auth_token_encrypted,
-          app_ids_json, custom_game, visible, enabled, revision, restart_nonce, status,
+          app_ids_json, custom_game, visible, clear_recent_activity, enabled, revision, restart_nonce, status,
           last_error, last_connected_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, NULL, NULL, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, NULL, NULL, ?, ?)
       `)
       .run(
         id,
@@ -121,6 +123,7 @@ export class AccountStore {
         JSON.stringify(input.appIds),
         input.customGame?.trim() || null,
         input.visible ? 1 : 0,
+        input.clearRecentActivity ? 1 : 0,
         input.enabled ? 1 : 0,
         input.enabled ? "idle" : "disabled",
         now,
@@ -134,13 +137,15 @@ export class AccountStore {
     const result = this.#db
       .prepare(`
         UPDATE accounts
-        SET app_ids_json = ?, custom_game = ?, visible = ?, revision = revision + 1, updated_at = ?
+        SET app_ids_json = ?, custom_game = ?, visible = ?, clear_recent_activity = ?,
+            revision = revision + 1, updated_at = ?
         WHERE id = ?
       `)
       .run(
         JSON.stringify(configuration.appIds),
         configuration.customGame?.trim() || null,
         configuration.visible ? 1 : 0,
+        configuration.clearRecentActivity ? 1 : 0,
         new Date().toISOString(),
         id
       );
@@ -270,7 +275,7 @@ export class AccountStore {
   #migrate(): void {
     const versionRow = this.#db.prepare("PRAGMA user_version").get() as { user_version: number };
     const version = versionRow.user_version;
-    if (version > 2) {
+    if (version > 3) {
       throw new Error(`Database schema ${version} is newer than this version of Linger supports`);
     }
     if (version === 0) {
@@ -312,6 +317,14 @@ export class AccountStore {
           heartbeat_at INTEGER NOT NULL
         );
         PRAGMA user_version = 2;
+      `);
+    }
+
+    if (version <= 2) {
+      this.#db.exec(`
+        ALTER TABLE accounts ADD COLUMN clear_recent_activity INTEGER NOT NULL DEFAULT 0
+          CHECK (clear_recent_activity IN (0, 1));
+        PRAGMA user_version = 3;
       `);
     }
   }

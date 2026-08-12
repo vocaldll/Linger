@@ -10,17 +10,28 @@ describe("account presence", () => {
 
   it("requires something to idle", () => {
     assert.throws(
-      () => validatePresence({ appIds: [], customGame: null, visible: true }),
+      () => validatePresence({ appIds: [], customGame: null, visible: true, clearRecentActivity: false }),
       /at least one AppID or a custom game name/iu
     );
   });
 
   it("enforces Steam's simultaneous presence limit", () => {
     const appIds = Array.from({ length: MAX_GAMES_PLAYED }, (_, index) => index + 1);
-    assert.doesNotThrow(() => validatePresence({ appIds, customGame: null, visible: true }));
+    assert.doesNotThrow(() =>
+      validatePresence({ appIds, customGame: null, visible: true, clearRecentActivity: false })
+    );
     assert.throws(
-      () => validatePresence({ appIds, customGame: "Linger", visible: true }),
+      () => validatePresence({ appIds, customGame: "Linger", visible: true, clearRecentActivity: false }),
       /at most 32/iu
+    );
+  });
+
+  it("reserves four presence slots when recent-activity clearing is enabled", () => {
+    const appIds = Array.from({ length: 29 }, (_, index) => index + 1);
+    assert.throws(
+      () =>
+        validatePresence({ appIds, customGame: null, visible: true, clearRecentActivity: true }),
+      /room for at most 28 games/iu
     );
   });
 });

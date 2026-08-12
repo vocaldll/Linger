@@ -3,7 +3,7 @@ import { CredentialVault } from "../crypto.js";
 import { AccountStore } from "../database.js";
 import type { Account } from "../domain/account.js";
 import { logger } from "../logger.js";
-import { applyPresence } from "./presence.js";
+import { PresenceController } from "./presence.js";
 
 const INITIAL_RETRY_MS = 5_000;
 const MAX_RETRY_MS = 5 * 60 * 1_000;
@@ -26,6 +26,7 @@ function isLoggedInElsewhere(error: SteamError): boolean {
 function presenceChanged(previous: Account, next: Account): boolean {
   return (
     previous.visible !== next.visible ||
+    previous.clearRecentActivity !== next.clearRecentActivity ||
     previous.customGame !== next.customGame ||
     JSON.stringify(previous.appIds) !== JSON.stringify(next.appIds)
   );
@@ -34,6 +35,7 @@ function presenceChanged(previous: Account, next: Account): boolean {
 export class AccountWorker {
   #record: Account;
   #client: SteamUser | null = null;
+  #presence: PresenceController | null = null;
   #connecting = false;
   #stopped = false;
   #generation = 0;
@@ -136,6 +138,13 @@ export class AccountWorker {
       this.#connecting = false;
       this.#retryAttempt = 0;
       this.#retryAt = 0;
+      this.#presence?.dispose();
+      this.#presence = new PresenceController(client, 3_000, (error) => {
+        logger.warn("Could not request recent-activity helper licenses; continuing", {
+          account: this.#record.accountName,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
       this.#applyPresence();
       const latest = this.store.get(account.id);
       if (latest) {
@@ -199,23 +208,28 @@ export class AccountWorker {
   }
 
   #applyPresence(): void {
-    if (!this.#client) {
+    const presence = this.#presence;
+    if (!presence) {
       return;
     }
-    try {
-      applyPresence(this.#client, this.#record);
-      logger.info("Steam presence applied", {
-        account: this.#record.accountName,
-        games: this.#record.appIds.length,
-        customGame: this.#record.customGame,
-        visible: this.#record.visible
-      });
-    } catch (error) {
-      logger.error("Could not apply Steam presence", {
-        account: this.#record.accountName,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
+    const snapshot = this.#record;
+    void presence.apply(snapshot).then(
+      () => {
+        logger.info("Steam presence applied", {
+          account: snapshot.accountName,
+          games: snapshot.appIds.length,
+          customGame: snapshot.customGame,
+          visible: snapshot.visible,
+          clearRecentActivity: snapshot.clearRecentActivity
+        });
+      },
+      (error: unknown) => {
+        logger.error("Could not apply Steam presence", {
+          account: snapshot.accountName,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    );
   }
 
   #fail(error: SteamError, needsAuthentication: boolean): void {
@@ -255,6 +269,8 @@ export class AccountWorker {
     const client = this.#client;
     this.#generation += 1;
     this.#client = null;
+    this.#presence?.dispose();
+    this.#presence = null;
     this.#connecting = false;
     if (client) {
       client.removeAllListeners();

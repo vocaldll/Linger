@@ -11,6 +11,7 @@ import type { Account, AccountConfiguration } from "./domain/account.js";
 import {
   MAX_CUSTOM_GAME_LENGTH,
   MAX_GAMES_PLAYED,
+  RECENT_ACTIVITY_RESERVED_SLOTS,
   parseAppIds,
   validatePresence
 } from "./domain/account.js";
@@ -117,12 +118,21 @@ async function promptConfiguration(current?: AccountConfiguration): Promise<Acco
     }
   });
   const customGame = customGameValue.trim() || null;
+  const clearRecentActivity = await confirm({
+    message: "Clear recent activity while boosting?",
+    default: current?.clearRecentActivity ?? false
+  });
   const appIdsValue = await input({
     message: "Game AppIDs (comma or space separated)",
     default: current?.appIds.join(", ") ?? "",
     validate(value) {
       try {
-        validatePresence({ appIds: parseAppIds(value), customGame, visible: true });
+        validatePresence({
+          appIds: parseAppIds(value),
+          customGame,
+          visible: true,
+          clearRecentActivity
+        });
         return true;
       } catch (error) {
         return error instanceof Error ? error.message : String(error);
@@ -134,7 +144,91 @@ async function promptConfiguration(current?: AccountConfiguration): Promise<Acco
     default: current?.visible ?? true
   });
 
-  return { appIds: parseAppIds(appIdsValue), customGame, visible };
+  return { appIds: parseAppIds(appIdsValue), customGame, visible, clearRecentActivity };
+}
+
+function currentConfiguration(account: Account): AccountConfiguration {
+  return {
+    appIds: account.appIds,
+    customGame: account.customGame,
+    visible: account.visible,
+    clearRecentActivity: account.clearRecentActivity
+  };
+}
+
+function updateConfiguration(
+  store: AccountStore,
+  account: Account,
+  patch: Partial<AccountConfiguration>
+): Account {
+  return store.updateConfiguration(account.id, { ...currentConfiguration(account), ...patch });
+}
+
+async function promptCustomGame(account: Account): Promise<string | null> {
+  const value = await input({
+    message: `Custom game title (current: ${account.customGame ?? "none"}; blank keeps, "-" clears)`,
+    validate(candidate) {
+      const trimmed = candidate.trim();
+      if (trimmed.length > MAX_CUSTOM_GAME_LENGTH) {
+        return `Use ${MAX_CUSTOM_GAME_LENGTH} characters or fewer`;
+      }
+      try {
+        validatePresence({
+          ...currentConfiguration(account),
+          customGame: !trimmed ? account.customGame : trimmed === "-" ? null : trimmed
+        });
+        return true;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    }
+  });
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return account.customGame;
+  }
+  return trimmed === "-" ? null : trimmed;
+}
+
+async function promptGameAppIds(account: Account): Promise<number[]> {
+  const current = account.appIds.length > 0 ? account.appIds.join(", ") : "none";
+  const value = await input({
+    message: `Game AppIDs (current: ${current}; blank keeps, "-" clears)`,
+    validate(candidate) {
+      try {
+        const trimmed = candidate.trim();
+        const appIds = !trimmed ? account.appIds : trimmed === "-" ? [] : parseAppIds(trimmed);
+        validatePresence({ ...currentConfiguration(account), appIds });
+        return true;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    }
+  });
+  const trimmed = value.trim();
+  return !trimmed ? account.appIds : trimmed === "-" ? [] : parseAppIds(trimmed);
+}
+
+async function promptVisibility(account: Account): Promise<boolean> {
+  const choices = [
+    { name: "Visible · show online and playing", value: true },
+    { name: "Invisible · still boost hours", value: false }
+  ];
+  return select({
+    message: `Visibility (current: ${account.visible ? "visible" : "invisible"})`,
+    choices: account.visible ? choices : choices.reverse()
+  });
+}
+
+async function promptRecentActivity(account: Account): Promise<boolean> {
+  const choices = [
+    { name: "Enabled · hide recently played games", value: true },
+    { name: "Disabled", value: false }
+  ];
+  return select({
+    message: `Clear recent activity (current: ${account.clearRecentActivity ? "enabled" : "disabled"})`,
+    choices: account.clearRecentActivity ? choices : choices.reverse()
+  });
 }
 
 function accountSummary(account: Account): string {
@@ -145,6 +239,7 @@ function accountSummary(account: Account): string {
     `State: ${STATUS_LABELS[account.status]}`,
     `Enabled: ${account.enabled ? "yes" : "no"}`,
     `Visibility: ${account.visible ? "visible" : "invisible"}`,
+    `Clear recent activity: ${account.clearRecentActivity ? "enabled" : "disabled"}`,
     `AppIDs: ${games}`,
     `Custom game: ${account.customGame ?? "none"}`,
     account.lastConnectedAt ? `Last connected: ${account.lastConnectedAt}` : null,
@@ -217,9 +312,24 @@ async function manageAccount(store: AccountStore, vault: CredentialVault, initia
       message: `Manage ${account.accountName}`,
       loop: false,
       choices: [
-        { name: "Edit games and visibility", value: "configure" },
         {
-          name: account.enabled ? "Disable hour boosting" : "Enable hour boosting",
+          name: `Custom game title · ${account.customGame ?? "none"}`,
+          value: "customGame"
+        },
+        {
+          name: `Game AppIDs · ${account.appIds.length > 0 ? account.appIds.join(", ") : "none"}`,
+          value: "appIds"
+        },
+        {
+          name: `Visibility · ${account.visible ? "visible" : "invisible"}`,
+          value: "visibility"
+        },
+        {
+          name: `Clear recent activity · ${account.clearRecentActivity ? "enabled" : "disabled"}`,
+          value: "recentActivity"
+        },
+        {
+          name: account.enabled ? "Disable account" : "Enable account",
           value: "toggle"
         },
         { name: "Restart Steam session", value: "restart", disabled: !account.enabled },
@@ -230,10 +340,35 @@ async function manageAccount(store: AccountStore, vault: CredentialVault, initia
     });
 
     switch (action) {
-      case "configure":
-        account = store.updateConfiguration(account.id, await promptConfiguration(account));
-        pauseMessage("Configuration saved.");
+      case "customGame": {
+        const customGame = await promptCustomGame(account);
+        account = updateConfiguration(store, account, { customGame });
+        pauseMessage("Custom game title saved.");
         break;
+      }
+      case "appIds":
+        account = updateConfiguration(store, account, { appIds: await promptGameAppIds(account) });
+        pauseMessage("Game AppIDs saved.");
+        break;
+      case "visibility":
+        account = updateConfiguration(store, account, { visible: await promptVisibility(account) });
+        pauseMessage("Visibility saved.");
+        break;
+      case "recentActivity": {
+        const clearRecentActivity = await promptRecentActivity(account);
+        try {
+          account = updateConfiguration(store, account, { clearRecentActivity });
+          pauseMessage("Recent-activity setting saved.");
+        } catch (error) {
+          if (clearRecentActivity) {
+            throw new Error(
+              `Could not enable recent-activity clearing: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+          throw error;
+        }
+        break;
+      }
       case "toggle":
         account = store.setEnabled(account.id, !account.enabled);
         pauseMessage(`${account.accountName} is now ${account.enabled ? "enabled" : "disabled"}.`);
@@ -274,7 +409,7 @@ async function chooseAccount(store: AccountStore): Promise<Account | null> {
     loop: false,
     choices: [
       ...accounts.map((account) => ({
-        name: `${account.accountName} · ${STATUS_LABELS[account.status]} · ${account.appIds.length + (account.customGame ? 1 : 0)}/${MAX_GAMES_PLAYED} games`,
+        name: `${account.accountName} · ${STATUS_LABELS[account.status]} · ${account.appIds.length + (account.customGame ? 1 : 0)}/${account.clearRecentActivity ? MAX_GAMES_PLAYED - RECENT_ACTIVITY_RESERVED_SLOTS : MAX_GAMES_PLAYED} games`,
         value: account
       })),
       { name: "Back", value: null }
@@ -292,8 +427,8 @@ export async function runManagementTui(store: AccountStore, vault: CredentialVau
     const action = await select({
       message: "What would you like to do?",
       choices: [
-        { name: "Manage accounts", value: "accounts" },
         { name: "Add Steam account", value: "add" },
+        { name: "Manage accounts", value: "accounts" },
         { name: "Exit", value: "exit" }
       ]
     });
