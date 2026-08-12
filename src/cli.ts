@@ -1,20 +1,78 @@
 #!/usr/bin/env node
 
+import { loadConfig } from "./config.js";
+import { CredentialVault } from "./crypto.js";
+import { AccountStore } from "./database.js";
+import { Runner } from "./runner.js";
+import { runManagementTui } from "./tui.js";
+
 const command = process.argv[2];
 
-switch (command) {
-  case "run":
-    process.stdout.write("Linger runner is not implemented yet.\n");
-    break;
-  case "manage":
-    process.stdout.write("Linger account manager is not implemented yet.\n");
-    break;
-  case "--help":
-  case "-h":
-  case undefined:
-    process.stdout.write("Usage: linger <run|manage>\n");
-    break;
-  default:
-    process.stderr.write(`Unknown command: ${command}\n`);
-    process.exitCode = 1;
+function printHelp(): void {
+  process.stdout.write(
+    [
+      "Linger · multi-account Steam hour booster",
+      "",
+      "Usage:",
+      "  linger run       Run all enabled accounts",
+      "  linger manage    Open the account management TUI",
+      "  linger --help    Show this help",
+      ""
+    ].join("\n")
+  );
 }
+
+async function runService(): Promise<void> {
+  const config = loadConfig();
+  const store = new AccountStore(config.databasePath);
+  const runner = new Runner(store, new CredentialVault(config.masterKey), config.reconcileIntervalMs);
+  let stopping = false;
+  const stop = (): void => {
+    if (!stopping) {
+      stopping = true;
+      void runner.stop();
+    }
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  try {
+    await runner.start();
+  } finally {
+    process.removeListener("SIGINT", stop);
+    process.removeListener("SIGTERM", stop);
+    store.close();
+  }
+}
+
+async function manageAccounts(): Promise<void> {
+  const config = loadConfig();
+  const store = new AccountStore(config.databasePath);
+  try {
+    await runManagementTui(store, new CredentialVault(config.masterKey));
+  } finally {
+    store.close();
+  }
+}
+
+async function main(): Promise<void> {
+  switch (command) {
+    case "run":
+      await runService();
+      break;
+    case "manage":
+      await manageAccounts();
+      break;
+    case "--help":
+    case "-h":
+    case undefined:
+      printHelp();
+      break;
+    default:
+      throw new Error(`Unknown command: ${command}`);
+  }
+}
+
+main().catch((error) => {
+  process.stderr.write(`Linger: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exitCode = 1;
+});

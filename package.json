@@ -10,14 +10,14 @@
     "url": "git+https://github.com/vocaldll/Linger.git"
   },
   "bin": {
-    "linger": "dist/cli.js"
+    "linger": "dist/src/cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/cli.ts",
-    "start": "node dist/cli.js run",
-    "manage": "node dist/cli.js manage",
+    "start": "node dist/src/cli.js run",
+    "manage": "node dist/src/cli.js manage",
     "test": "pnpm run build && node --test --enable-source-maps dist/**/*.test.js"
   },
   "engines": {
