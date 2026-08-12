@@ -51,12 +51,14 @@ function isCodeChoice(choice: GuardChoice): boolean {
 
 export async function authenticate(
   method: LoginMethod,
-  interaction: AuthenticationInteraction
+  interaction: AuthenticationInteraction,
+  createSession: () => LoginSession = () =>
+    new LoginSession(EAuthTokenPlatformType.SteamClient, {
+      machineId: true,
+      machineFriendlyName: MACHINE_NAME
+    })
 ): Promise<AuthenticationResult> {
-  const session = new LoginSession(EAuthTokenPlatformType.SteamClient, {
-    machineId: true,
-    machineFriendlyName: MACHINE_NAME
-  });
+  const session = createSession();
   session.loginTimeout = LOGIN_TIMEOUT_MS;
 
   const promptController = new AbortController();
@@ -76,7 +78,11 @@ export async function authenticate(
     session.on("steamGuardMachineToken", () => {
       machineAuthToken = session.steamGuardMachineToken;
     });
-    session.on("remoteInteraction", () => interaction.notify("Steam sign-in request opened on mobile."));
+    session.on("remoteInteraction", () => {
+      if (method.type === "credentials") {
+        interaction.notify("Steam sign-in request opened on mobile.");
+      }
+    });
     session.on("authenticated", () => {
       finish(() =>
         resolve({
@@ -106,6 +112,10 @@ export async function authenticate(
 
     if (response.qrChallengeUrl) {
       interaction.showQrCode(response.qrChallengeUrl);
+    }
+
+    if (method.type === "qr") {
+      return await outcome;
     }
 
     if (response.actionRequired) {
