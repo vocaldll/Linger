@@ -1,0 +1,7 @@
+allowBuilds:
+  esbuild: true
+  protobufjs: true
+
+overrides:
+  adm-zip: 0.6.0
+  protobufjs: 7.6.5

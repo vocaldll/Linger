@@ -1,0 +1,16 @@
+services:
+  linger:
+    image: linger:latest
+    build: .
+    container_name: linger
+    restart: unless-stopped
+    init: true
+    environment:
+      LINGER_DATA_DIR: /app/data
+      FORCE_COLOR: "1"
+    volumes:
+      - linger-data:/app/data
+
+volumes:
+  linger-data:
+    name: linger-data
