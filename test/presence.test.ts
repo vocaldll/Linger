@@ -21,7 +21,7 @@ describe("Steam presence", () => {
     );
   });
 
-  it("places real activity after helper entries so it wins the visible playing slot", () => {
+  it("places helper entries after real activity for the temporary clearing step", () => {
     const plan = buildPresencePlan({
       appIds: [730],
       customGame: null,
@@ -29,7 +29,7 @@ describe("Steam presence", () => {
       clearRecentActivity: true
     });
     assert.deepEqual(plan.baseGames, [730]);
-    assert.deepEqual(plan.games, [...RECENT_ACTIVITY_APP_IDS, 730]);
+    assert.deepEqual(plan.games, [730, ...RECENT_ACTIVITY_APP_IDS]);
   });
 
   it("finishes the clearing transition even when a helper license request fails", async () => {
@@ -59,8 +59,9 @@ describe("Steam presence", () => {
     });
 
     assert.deepEqual(played, [
-      [...RECENT_ACTIVITY_APP_IDS],
-      [...RECENT_ACTIVITY_APP_IDS, 730]
+      [730],
+      [730, ...RECENT_ACTIVITY_APP_IDS],
+      [730]
     ]);
     assert.deepEqual(personas, [SteamUser.EPersonaState.Invisible, SteamUser.EPersonaState.Online]);
     assert.equal(licenseErrors, 1);
