@@ -54,9 +54,8 @@ export class PresenceController {
       return;
     }
 
-    // Keep the account hidden while the helper apps are briefly launched. The configured games
-    // remain active throughout the transition, so removing the helpers does not relaunch the real
-    // games (which would put them back at the front of Recent Activity).
+    // Start the configured games first, then add the helper apps and leave them running. This
+    // keeps the helpers as Steam's newest activity while the configured games continue boosting.
     this.client.setPersona(SteamUser.EPersonaState.Invisible);
     this.client.gamesPlayed(plan.baseGames);
     await Promise.all([
@@ -68,12 +67,6 @@ export class PresenceController {
     }
 
     this.client.gamesPlayed(plan.games);
-    await this.#delay();
-    if (this.#disposed || revision !== this.#revision) {
-      return;
-    }
-
-    this.client.gamesPlayed(plan.baseGames);
     this.client.setPersona(
       configuration.visible ? SteamUser.EPersonaState.Online : SteamUser.EPersonaState.Invisible
     );
