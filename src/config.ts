@@ -10,6 +10,7 @@ export type AppConfig = {
 };
 
 const DEFAULT_RECONCILE_INTERVAL_MS = 2_000;
+const MINIMUM_MASTER_KEY_LENGTH = 32;
 
 function readPositiveInteger(value: string | undefined, fallback: number, name: string): number {
   if (value === undefined) {
@@ -25,10 +26,32 @@ function readPositiveInteger(value: string | undefined, fallback: number, name: 
 }
 
 function loadOrCreateMasterKey(dataDir: string): string {
+  const configuredFile = process.env.LINGER_MASTER_KEY_FILE?.trim();
+  if (configuredFile) {
+    const keyPath = path.resolve(configuredFile);
+    let value: string;
+    try {
+      value = readFileSync(keyPath, "utf8").trim();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(`LINGER_MASTER_KEY_FILE does not exist: ${keyPath}`);
+      }
+      throw error;
+    }
+    if (value.length < MINIMUM_MASTER_KEY_LENGTH) {
+      throw new Error(
+        `LINGER_MASTER_KEY_FILE must contain at least ${MINIMUM_MASTER_KEY_LENGTH} characters`
+      );
+    }
+    return value;
+  }
+
   const configured = process.env.LINGER_MASTER_KEY?.trim();
   if (configured) {
-    if (configured.length < 32) {
-      throw new Error("LINGER_MASTER_KEY must be at least 32 characters long");
+    if (configured.length < MINIMUM_MASTER_KEY_LENGTH) {
+      throw new Error(
+        `LINGER_MASTER_KEY must be at least ${MINIMUM_MASTER_KEY_LENGTH} characters long`
+      );
     }
     return configured;
   }
