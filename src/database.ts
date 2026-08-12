@@ -229,6 +229,30 @@ export class AccountStore {
       .run();
   }
 
+  claimRunner(ownerId: string, staleAfterMs = 30_000): boolean {
+    const now = Date.now();
+    const result = this.#db.prepare(`
+      INSERT INTO runner_lease (singleton, owner_id, heartbeat_at)
+      VALUES (1, ?, ?)
+      ON CONFLICT(singleton) DO UPDATE SET owner_id = excluded.owner_id, heartbeat_at = excluded.heartbeat_at
+      WHERE runner_lease.owner_id = excluded.owner_id OR runner_lease.heartbeat_at < ?
+    `).run(ownerId, now, now - staleAfterMs);
+    return result.changes > 0;
+  }
+
+  heartbeatRunner(ownerId: string): void {
+    const result = this.#db
+      .prepare("UPDATE runner_lease SET heartbeat_at = ? WHERE singleton = 1 AND owner_id = ?")
+      .run(Date.now(), ownerId);
+    if (result.changes === 0) {
+      throw new Error("Linger runner lost its database lease");
+    }
+  }
+
+  releaseRunner(ownerId: string): void {
+    this.#db.prepare("DELETE FROM runner_lease WHERE singleton = 1 AND owner_id = ?").run(ownerId);
+  }
+
   #require(id: string): Account {
     const account = this.get(id);
     if (!account) {
@@ -246,15 +270,12 @@ export class AccountStore {
   #migrate(): void {
     const versionRow = this.#db.prepare("PRAGMA user_version").get() as { user_version: number };
     const version = versionRow.user_version;
-    if (version > 1) {
+    if (version > 2) {
       throw new Error(`Database schema ${version} is newer than this version of Linger supports`);
     }
-    if (version === 1) {
-      return;
-    }
-
-    this.#db.exec("BEGIN IMMEDIATE");
-    try {
+    if (version === 0) {
+      this.#db.exec("BEGIN IMMEDIATE");
+      try {
       this.#db.exec(`
         CREATE TABLE accounts (
           id TEXT PRIMARY KEY,
@@ -277,9 +298,21 @@ export class AccountStore {
         PRAGMA user_version = 1;
       `);
       this.#db.exec("COMMIT");
-    } catch (error) {
-      this.#db.exec("ROLLBACK");
-      throw error;
+      } catch (error) {
+        this.#db.exec("ROLLBACK");
+        throw error;
+      }
+    }
+
+    if (version <= 1) {
+      this.#db.exec(`
+        CREATE TABLE runner_lease (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          owner_id TEXT NOT NULL,
+          heartbeat_at INTEGER NOT NULL
+        );
+        PRAGMA user_version = 2;
+      `);
     }
   }
 }

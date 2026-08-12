@@ -1,4 +1,5 @@
 export const MAX_GAMES_PLAYED = 32;
+export const MAX_CUSTOM_GAME_LENGTH = 128;
 
 export type AccountStatus =
   | "disabled"
@@ -66,6 +67,9 @@ export function parseAppIds(input: string): number[] {
 
 export function validatePresence(configuration: AccountConfiguration): void {
   const customGame = configuration.customGame?.trim() || null;
+  if (customGame && customGame.length > MAX_CUSTOM_GAME_LENGTH) {
+    throw new Error(`Custom game name must be ${MAX_CUSTOM_GAME_LENGTH} characters or fewer`);
+  }
   const slots = configuration.appIds.length + (customGame ? 1 : 0);
   if (slots === 0) {
     throw new Error("Configure at least one AppID or a custom game name");

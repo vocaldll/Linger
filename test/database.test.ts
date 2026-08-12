@@ -63,4 +63,14 @@ describe("AccountStore", () => {
     assert.equal(updated.revision, account.revision);
     store.close();
   });
+
+  it("allows only one active runner lease", () => {
+    const store = createStore();
+    assert.equal(store.claimRunner("runner-one"), true);
+    assert.equal(store.claimRunner("runner-two"), false);
+    assert.doesNotThrow(() => store.heartbeatRunner("runner-one"));
+    store.releaseRunner("runner-one");
+    assert.equal(store.claimRunner("runner-two"), true);
+    store.close();
+  });
 });
