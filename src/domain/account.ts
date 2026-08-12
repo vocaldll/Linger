@@ -1,0 +1,81 @@
+export const MAX_GAMES_PLAYED = 32;
+
+export type AccountStatus =
+  | "disabled"
+  | "idle"
+  | "connecting"
+  | "online"
+  | "backoff"
+  | "needs_auth"
+  | "error";
+
+export type Account = {
+  id: string;
+  accountName: string;
+  steamId: string | null;
+  refreshTokenEncrypted: string;
+  machineAuthTokenEncrypted: string | null;
+  appIds: number[];
+  customGame: string | null;
+  visible: boolean;
+  enabled: boolean;
+  revision: number;
+  restartNonce: number;
+  status: AccountStatus;
+  lastError: string | null;
+  lastConnectedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type NewAccount = Omit<
+  Account,
+  "id" | "revision" | "restartNonce" | "status" | "lastError" | "lastConnectedAt" | "createdAt" | "updatedAt"
+>;
+
+export type AccountConfiguration = Pick<Account, "appIds" | "customGame" | "visible">;
+
+export type RuntimePatch = Partial<
+  Pick<Account, "steamId" | "status" | "lastError" | "lastConnectedAt" | "refreshTokenEncrypted" | "machineAuthTokenEncrypted">
+>;
+
+export function parseAppIds(input: string): number[] {
+  const values = input
+    .split(/[\s,]+/u)
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  const appIds: number[] = [];
+  const seen = new Set<number>();
+  for (const value of values) {
+    if (!/^\d+$/u.test(value)) {
+      throw new Error(`Invalid AppID: ${value}`);
+    }
+    const appId = Number(value);
+    if (!Number.isSafeInteger(appId) || appId <= 0 || appId > 0xffff_ffff) {
+      throw new Error(`Invalid AppID: ${value}`);
+    }
+    if (!seen.has(appId)) {
+      seen.add(appId);
+      appIds.push(appId);
+    }
+  }
+
+  return appIds;
+}
+
+export function validatePresence(configuration: AccountConfiguration): void {
+  const customGame = configuration.customGame?.trim() || null;
+  const slots = configuration.appIds.length + (customGame ? 1 : 0);
+  if (slots === 0) {
+    throw new Error("Configure at least one AppID or a custom game name");
+  }
+  if (slots > MAX_GAMES_PLAYED) {
+    throw new Error(`Steam supports at most ${MAX_GAMES_PLAYED} simultaneous games`);
+  }
+  for (const appId of configuration.appIds) {
+    if (!Number.isSafeInteger(appId) || appId <= 0 || appId > 0xffff_ffff) {
+      throw new Error(`Invalid AppID: ${appId}`);
+    }
+  }
+}
