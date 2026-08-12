@@ -26,12 +26,27 @@ describe("account presence", () => {
     );
   });
 
-  it("reserves four presence slots when recent-activity clearing is enabled", () => {
-    const appIds = Array.from({ length: 29 }, (_, index) => index + 1);
+  it("reserves three presence slots when recent-activity clearing is enabled", () => {
+    const maximumAppIds = Array.from({ length: 29 }, (_, index) => index + 1);
+    assert.doesNotThrow(() =>
+      validatePresence({
+        appIds: maximumAppIds,
+        customGame: null,
+        visible: true,
+        clearRecentActivity: true
+      })
+    );
+
+    const tooManyAppIds = Array.from({ length: 30 }, (_, index) => index + 1);
     assert.throws(
       () =>
-        validatePresence({ appIds, customGame: null, visible: true, clearRecentActivity: true }),
-      /room for at most 28 games/iu
+        validatePresence({
+          appIds: tooManyAppIds,
+          customGame: null,
+          visible: true,
+          clearRecentActivity: true
+        }),
+      /room for at most 29 games/iu
     );
   });
 });

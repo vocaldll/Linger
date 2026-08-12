@@ -2,7 +2,7 @@ import SteamUser from "steam-user";
 import type { AccountConfiguration } from "../domain/account.js";
 import { validatePresence } from "../domain/account.js";
 
-export const RECENT_ACTIVITY_APP_IDS = [635240, 635241, 635242, 635243] as const;
+export const RECENT_ACTIVITY_APP_IDS = [635240, 635241, 635242] as const;
 
 export type PresencePlan = {
   baseGames: Array<number | string>;

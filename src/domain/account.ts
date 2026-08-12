@@ -1,6 +1,6 @@
 export const MAX_GAMES_PLAYED = 32;
 export const MAX_CUSTOM_GAME_LENGTH = 128;
-export const RECENT_ACTIVITY_RESERVED_SLOTS = 4;
+export const RECENT_ACTIVITY_RESERVED_SLOTS = 3;
 
 export type AccountStatus =
   | "disabled"
