@@ -20,7 +20,7 @@ function isAuthenticationError(error: SteamError): boolean {
 }
 
 function isLoggedInElsewhere(error: SteamError): boolean {
-  return /LoggedInElsewhere/iu.test(error.message);
+  return /LoggedInElsewhere|LogonSessionReplaced/iu.test(error.message);
 }
 
 function presenceChanged(previous: Account, next: Account): boolean {

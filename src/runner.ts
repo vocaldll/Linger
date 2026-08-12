@@ -58,7 +58,14 @@ export class Runner {
       }
     } finally {
       for (const worker of this.#workers.values()) {
-        worker.stop();
+        try {
+          worker.stop();
+        } catch (error) {
+          logger.error("Could not stop Steam account cleanly", {
+            account: worker.accountName,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
       }
       this.#workers.clear();
       this.store.releaseRunner(this.#ownerId);
@@ -72,7 +79,14 @@ export class Runner {
 
     for (const [id, worker] of this.#workers) {
       if (!existingIds.has(id)) {
-        worker.stop();
+        try {
+          worker.stop();
+        } catch (error) {
+          logger.error("Could not stop removed Steam account cleanly", {
+            account: worker.accountName,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
         this.#workers.delete(id);
       }
     }
@@ -83,7 +97,14 @@ export class Runner {
         worker = new AccountWorker(this.store, this.vault, account);
         this.#workers.set(account.id, worker);
       }
-      worker.reconcile(account);
+      try {
+        worker.reconcile(account);
+      } catch (error) {
+        logger.error("Could not reconcile Steam account", {
+          account: account.accountName,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
     }
   }
 }
