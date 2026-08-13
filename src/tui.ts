@@ -2,6 +2,7 @@ import {
   confirm,
   input,
   password,
+  search,
   select
 } from "@inquirer/prompts";
 import qrcode from "qrcode-terminal";
@@ -39,6 +40,29 @@ const STATUS_LABELS: Record<Account["status"], string> = {
   needs_auth: "needs login",
   error: "error"
 };
+
+type SearchableAccount = Pick<Account, "accountName" | "steamId" | "status">;
+
+export function filterAccountsForSearch<AccountType extends SearchableAccount>(
+  accounts: readonly AccountType[],
+  term: string | undefined
+): AccountType[] {
+  const words = term?.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean) ?? [];
+  if (words.length === 0) {
+    return [...accounts];
+  }
+  return accounts.filter((account) => {
+    const searchable = [
+      account.accountName,
+      account.steamId ?? "",
+      account.status,
+      STATUS_LABELS[account.status]
+    ]
+      .join(" ")
+      .toLocaleLowerCase();
+    return words.every((word) => searchable.includes(word));
+  });
+}
 
 function printHeader(): void {
   process.stdout.write("\nLinger · Steam hour booster\n\n");
@@ -513,16 +537,18 @@ async function chooseAccount(store: AccountStore): Promise<Account | null> {
     pauseMessage("No Steam accounts have been added yet.");
     return null;
   }
-  return select({
+  return search<Account | null>({
     message: "Choose an account",
-    loop: false,
-    choices: [
-      ...accounts.map((account) => ({
-        name: `${account.accountName} · ${STATUS_LABELS[account.status]} · ${account.appIds.length + (account.customGame ? 1 : 0)}/${account.clearRecentActivity ? MAX_GAMES_PLAYED - RECENT_ACTIVITY_RESERVED_SLOTS : MAX_GAMES_PLAYED} games`,
-        value: account
-      })),
-      { name: "Back", value: null }
-    ]
+    source(term) {
+      return [
+        ...filterAccountsForSearch(accounts, term).map((account) => ({
+          name: `${account.accountName} · ${STATUS_LABELS[account.status]} · ${account.appIds.length + (account.customGame ? 1 : 0)}/${account.clearRecentActivity ? MAX_GAMES_PLAYED - RECENT_ACTIVITY_RESERVED_SLOTS : MAX_GAMES_PLAYED} games`,
+          value: account,
+          ...(account.steamId ? { description: `SteamID: ${account.steamId}` } : {})
+        })),
+        { name: "Back", value: null }
+      ];
+    }
   });
 }
 

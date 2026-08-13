@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { MAX_GAMES_PLAYED, parseAppIds, validatePresence } from "../src/domain/account.js";
+import { filterAccountsForSearch } from "../src/tui.js";
 
 describe("account presence", () => {
   it("parses, validates, and deduplicates AppIDs", () => {
@@ -48,5 +49,41 @@ describe("account presence", () => {
         }),
       /room for at most 29 games/iu
     );
+  });
+});
+
+describe("account search", () => {
+  const accounts = [
+    {
+      accountName: "primary",
+      steamId: "76561198000000001",
+      status: "online" as const
+    },
+    {
+      accountName: "trading-alt",
+      steamId: "76561198000000002",
+      status: "needs_auth" as const
+    },
+    {
+      accountName: "idle-account",
+      steamId: null,
+      status: "disabled" as const
+    }
+  ];
+
+  it("filters accounts by name, SteamID, and readable status", () => {
+    assert.deepEqual(
+      filterAccountsForSearch(accounts, "trading login").map((account) => account.accountName),
+      ["trading-alt"]
+    );
+    assert.deepEqual(
+      filterAccountsForSearch(accounts, "000000001").map((account) => account.accountName),
+      ["primary"]
+    );
+    assert.deepEqual(
+      filterAccountsForSearch(accounts, "disabled").map((account) => account.accountName),
+      ["idle-account"]
+    );
+    assert.deepEqual(filterAccountsForSearch(accounts, ""), accounts);
   });
 });
