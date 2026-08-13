@@ -10,6 +10,7 @@ import type {
   RuntimePatch
 } from "./domain/account.js";
 import { validatePresence } from "./domain/account.js";
+import type { OwnedGame } from "./domain/game-library.js";
 
 type AccountRow = {
   id: string;
@@ -29,6 +30,12 @@ type AccountRow = {
   last_connected_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+type OwnedGameRow = {
+  app_id: number;
+  name: string;
+  playtime_forever: number;
 };
 
 const ACCOUNT_COLUMNS = `
@@ -219,6 +226,56 @@ export class AccountStore {
     return this.#require(id);
   }
 
+  listOwnedGames(accountId: string): OwnedGame[] {
+    const rows = this.#db
+      .prepare(`
+        SELECT app_id, name, playtime_forever
+        FROM owned_games
+        WHERE account_id = ?
+      `)
+      .all(accountId) as OwnedGameRow[];
+    return rows.map((row) => ({
+      appId: row.app_id,
+      name: row.name,
+      playtimeForever: row.playtime_forever
+    }));
+  }
+
+  replaceOwnedGames(accountId: string, games: readonly OwnedGame[]): void {
+    if (!this.get(accountId)) {
+      throw new Error(`Account not found: ${accountId}`);
+    }
+    const normalized = new Map<number, OwnedGame>();
+    for (const game of games) {
+      const name = game.name.trim();
+      if (
+        Number.isSafeInteger(game.appId) &&
+        game.appId > 0 &&
+        name &&
+        Number.isSafeInteger(game.playtimeForever) &&
+        game.playtimeForever >= 0
+      ) {
+        normalized.set(game.appId, { ...game, name });
+      }
+    }
+
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#db.prepare("DELETE FROM owned_games WHERE account_id = ?").run(accountId);
+      const insert = this.#db.prepare(`
+        INSERT INTO owned_games (account_id, app_id, name, playtime_forever)
+        VALUES (?, ?, ?, ?)
+      `);
+      for (const game of normalized.values()) {
+        insert.run(accountId, game.appId, game.name, game.playtimeForever);
+      }
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   delete(id: string): void {
     const result = this.#db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
     this.#assertChanged(result.changes, id);
@@ -275,7 +332,7 @@ export class AccountStore {
   #migrate(): void {
     const versionRow = this.#db.prepare("PRAGMA user_version").get() as { user_version: number };
     const version = versionRow.user_version;
-    if (version > 3) {
+    if (version > 4) {
       throw new Error(`Database schema ${version} is newer than this version of Linger supports`);
     }
     if (version === 0) {
@@ -325,6 +382,19 @@ export class AccountStore {
         ALTER TABLE accounts ADD COLUMN clear_recent_activity INTEGER NOT NULL DEFAULT 0
           CHECK (clear_recent_activity IN (0, 1));
         PRAGMA user_version = 3;
+      `);
+    }
+
+    if (version <= 3) {
+      this.#db.exec(`
+        CREATE TABLE owned_games (
+          account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+          app_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          playtime_forever INTEGER NOT NULL CHECK (playtime_forever >= 0),
+          PRIMARY KEY (account_id, app_id)
+        );
+        PRAGMA user_version = 4;
       `);
     }
   }

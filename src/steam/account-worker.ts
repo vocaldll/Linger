@@ -3,6 +3,7 @@ import { CredentialVault } from "../crypto.js";
 import { AccountStore } from "../database.js";
 import type { Account } from "../domain/account.js";
 import { logger } from "../logger.js";
+import { getOwnedGames } from "./game-library.js";
 import { PresenceController } from "./presence.js";
 
 const INITIAL_RETRY_MS = 5_000;
@@ -146,6 +147,7 @@ export class AccountWorker {
         });
       });
       this.#applyPresence();
+      void this.#syncLibrary(generation, client, account.id);
       const latest = this.store.get(account.id);
       if (latest) {
         this.#record = this.store.updateRuntime(account.id, {
@@ -230,6 +232,31 @@ export class AccountWorker {
         });
       }
     );
+  }
+
+  async #syncLibrary(generation: number, client: SteamUser, accountId: string): Promise<void> {
+    try {
+      const steamId = client.steamID?.getSteamID64();
+      if (!steamId) {
+        throw new Error("Steam did not provide an account ID for library loading");
+      }
+      const games = await getOwnedGames(client, steamId);
+      if (!this.#isCurrent(generation, client)) {
+        return;
+      }
+      this.store.replaceOwnedGames(accountId, games);
+      logger.info("Steam game library cached", {
+        account: this.#record.accountName,
+        games: games.length
+      });
+    } catch (error) {
+      if (this.#isCurrent(generation, client)) {
+        logger.warn("Could not refresh Steam game library; keeping the existing cache", {
+          account: this.#record.accountName,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
   }
 
   #fail(error: SteamError, needsAuthentication: boolean): void {

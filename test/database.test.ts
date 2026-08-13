@@ -69,6 +69,42 @@ describe("AccountStore", () => {
     store.close();
   });
 
+  it("replaces and reads the cached game library", () => {
+    const store = createStore();
+    const account = store.create({
+      accountName: "library-test",
+      steamId: "76561198000000000",
+      refreshTokenEncrypted: "encrypted",
+      machineAuthTokenEncrypted: null,
+      appIds: [730],
+      customGame: null,
+      visible: true,
+      clearRecentActivity: false,
+      enabled: true
+    });
+
+    store.replaceOwnedGames(account.id, [
+      { appId: 730, name: " Counter-Strike 2 ", playtimeForever: 600 },
+      { appId: 440, name: "Team Fortress 2", playtimeForever: 120 },
+      { appId: 0, name: "Invalid", playtimeForever: 1 }
+    ]);
+    assert.deepEqual(
+      store.listOwnedGames(account.id).sort((left, right) => left.appId - right.appId),
+      [
+        { appId: 440, name: "Team Fortress 2", playtimeForever: 120 },
+        { appId: 730, name: "Counter-Strike 2", playtimeForever: 600 }
+      ]
+    );
+
+    store.replaceOwnedGames(account.id, [
+      { appId: 570, name: "Dota 2", playtimeForever: 30 }
+    ]);
+    assert.deepEqual(store.listOwnedGames(account.id), [
+      { appId: 570, name: "Dota 2", playtimeForever: 30 }
+    ]);
+    store.close();
+  });
+
   it("allows only one active runner lease", () => {
     const store = createStore();
     assert.equal(store.claimRunner("runner-one"), true);

@@ -16,12 +16,19 @@ import {
   validatePresence
 } from "./domain/account.js";
 import {
+  GAME_SORT_LABELS,
+  type GameSort,
+  type OwnedGame
+} from "./domain/game-library.js";
+import {
   authenticate,
   type AuthenticationInteraction,
   type AuthenticationResult,
   type GuardChoice,
   type LoginMethod
 } from "./steam/authentication.js";
+import { fetchOwnedGamesForLogin } from "./steam/game-library.js";
+import { gamePicker } from "./tui/game-picker.js";
 
 const STATUS_LABELS: Record<Account["status"], string> = {
   disabled: "disabled",
@@ -107,7 +114,107 @@ async function promptLoginMethod(
   };
 }
 
-async function promptConfiguration(current?: AccountConfiguration): Promise<AccountConfiguration> {
+type GameSelectionContext = Pick<
+  AccountConfiguration,
+  "customGame" | "clearRecentActivity"
+>;
+
+function maximumSelectableAppIds(context: GameSelectionContext): number {
+  return (
+    MAX_GAMES_PLAYED -
+    (context.clearRecentActivity ? RECENT_ACTIVITY_RESERVED_SLOTS : 0) -
+    (context.customGame ? 1 : 0)
+  );
+}
+
+async function promptGamePicker(
+  ownedGames: readonly OwnedGame[],
+  initialAppIds: readonly number[],
+  context: GameSelectionContext
+): Promise<number[] | null> {
+  let selectedAppIds = [...initialAppIds];
+  let sort: GameSort = "most_played";
+  let query = "";
+  let activeAppId: number | null = null;
+  let notice: string | undefined;
+  const maximumSelected = maximumSelectableAppIds(context);
+
+  while (true) {
+    const result = await gamePicker(
+      {
+        games: ownedGames,
+        selectedAppIds,
+        sort,
+        maximumSelected,
+        allowEmpty: Boolean(context.customGame),
+        initialQuery: query,
+        initialActiveAppId: activeAppId,
+        ...(notice ? { notice } : {})
+      },
+      { clearPromptOnDone: true }
+    );
+    selectedAppIds = result.selectedAppIds;
+    query = result.query;
+    activeAppId = result.activeAppId;
+    notice = undefined;
+
+    if (result.action === "save") {
+      return selectedAppIds;
+    }
+    if (result.action === "cancel") {
+      return null;
+    }
+    if (result.action === "sort") {
+      sort = await select({
+        message: "Sort games by",
+        default: sort,
+        choices: (Object.entries(GAME_SORT_LABELS) as Array<[GameSort, string]>).map(
+          ([value, name]) => ({ name, value })
+        )
+      });
+      continue;
+    }
+
+    const value = await input({
+      message: "Enter AppIDs (comma or space separated)",
+      validate(candidate) {
+        if (!candidate.trim()) {
+          return true;
+        }
+        try {
+          const entered = parseAppIds(candidate);
+          const combined = [...new Set([...selectedAppIds, ...entered])];
+          validatePresence({
+            appIds: combined,
+            customGame: context.customGame,
+            visible: true,
+            clearRecentActivity: context.clearRecentActivity
+          });
+          return true;
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+      }
+    });
+    if (!value.trim()) {
+      notice = "No AppIDs added.";
+      continue;
+    }
+    const entered = parseAppIds(value);
+    const previousCount = selectedAppIds.length;
+    selectedAppIds = [...new Set([...selectedAppIds, ...entered])];
+    const added = selectedAppIds.length - previousCount;
+    notice =
+      added === 0
+        ? "Those AppIDs were already selected."
+        : `Added ${added} AppID${added === 1 ? "" : "s"}.`;
+  }
+}
+
+async function promptConfiguration(
+  ownedGames: readonly OwnedGame[],
+  current?: AccountConfiguration
+): Promise<AccountConfiguration | null> {
   const customGameValue = await input({
     message: "Custom game name (optional)",
     default: current?.customGame ?? "",
@@ -122,29 +229,19 @@ async function promptConfiguration(current?: AccountConfiguration): Promise<Acco
     message: "Clear recent activity while boosting?",
     default: current?.clearRecentActivity ?? false
   });
-  const appIdsValue = await input({
-    message: "Game AppIDs (comma or space separated)",
-    default: current?.appIds.join(", ") ?? "",
-    validate(value) {
-      try {
-        validatePresence({
-          appIds: parseAppIds(value),
-          customGame,
-          visible: true,
-          clearRecentActivity
-        });
-        return true;
-      } catch (error) {
-        return error instanceof Error ? error.message : String(error);
-      }
-    }
+  const appIds = await promptGamePicker(ownedGames, current?.appIds ?? [], {
+    customGame,
+    clearRecentActivity
   });
+  if (appIds === null) {
+    return null;
+  }
   const visible = await confirm({
     message: "Show this account as online and playing?",
     default: current?.visible ?? true
   });
 
-  return { appIds: parseAppIds(appIdsValue), customGame, visible, clearRecentActivity };
+  return { appIds, customGame, visible, clearRecentActivity };
 }
 
 function currentConfiguration(account: Account): AccountConfiguration {
@@ -190,23 +287,11 @@ async function promptCustomGame(account: Account): Promise<string | null> {
   return trimmed === "-" ? null : trimmed;
 }
 
-async function promptGameAppIds(account: Account): Promise<number[]> {
-  const current = account.appIds.length > 0 ? account.appIds.join(", ") : "none";
-  const value = await input({
-    message: `Game AppIDs (current: ${current}; blank keeps, "-" clears)`,
-    validate(candidate) {
-      try {
-        const trimmed = candidate.trim();
-        const appIds = !trimmed ? account.appIds : trimmed === "-" ? [] : parseAppIds(trimmed);
-        validatePresence({ ...currentConfiguration(account), appIds });
-        return true;
-      } catch (error) {
-        return error instanceof Error ? error.message : String(error);
-      }
-    }
-  });
-  const trimmed = value.trim();
-  return !trimmed ? account.appIds : trimmed === "-" ? [] : parseAppIds(trimmed);
+async function promptGameAppIds(
+  store: AccountStore,
+  account: Account
+): Promise<number[] | null> {
+  return promptGamePicker(store.listOwnedGames(account.id), account.appIds, account);
 }
 
 async function promptVisibility(account: Account): Promise<boolean> {
@@ -240,7 +325,7 @@ function accountSummary(account: Account): string {
     `Enabled: ${account.enabled ? "yes" : "no"}`,
     `Visibility: ${account.visible ? "visible" : "invisible"}`,
     `Clear recent activity: ${account.clearRecentActivity ? "enabled" : "disabled"}`,
-    `AppIDs: ${games}`,
+    `Boosted AppIDs: ${games}`,
     `Custom game: ${account.customGame ?? "none"}`,
     account.lastConnectedAt ? `Last connected: ${account.lastConnectedAt}` : null,
     account.lastError ? `Last error: ${account.lastError}` : null
@@ -273,7 +358,24 @@ async function addAccount(store: AccountStore, vault: CredentialVault): Promise<
   if (store.getByName(login.accountName)) {
     throw new Error(`Account already exists: ${login.accountName}`);
   }
-  const configuration = await promptConfiguration();
+  pauseMessage("Loading your Steam game library...");
+  let ownedGames: OwnedGame[] = [];
+  try {
+    ownedGames = await fetchOwnedGamesForLogin(
+      login.refreshToken,
+      login.steamId,
+      login.machineAuthToken
+    );
+  } catch (error) {
+    pauseMessage(
+      `Could not load the Steam library: ${error instanceof Error ? error.message : String(error)}\nUse m in the picker to enter AppIDs manually.`
+    );
+  }
+  const configuration = await promptConfiguration(ownedGames);
+  if (!configuration) {
+    pauseMessage("Account setup cancelled.");
+    return;
+  }
   const account = store.create({
     accountName: login.accountName,
     steamId: login.steamId,
@@ -282,6 +384,7 @@ async function addAccount(store: AccountStore, vault: CredentialVault): Promise<
     ...configuration,
     enabled: true
   });
+  store.replaceOwnedGames(account.id, ownedGames);
   pauseMessage(`Added ${account.accountName}. The runner will connect it automatically.`);
 }
 
@@ -317,7 +420,7 @@ async function manageAccount(store: AccountStore, vault: CredentialVault, initia
           value: "customGame"
         },
         {
-          name: `Game AppIDs · ${account.appIds.length > 0 ? account.appIds.join(", ") : "none"}`,
+          name: `Boosted games · ${account.appIds.length} selected`,
           value: "appIds"
         },
         {
@@ -346,10 +449,16 @@ async function manageAccount(store: AccountStore, vault: CredentialVault, initia
         pauseMessage("Custom game title saved.");
         break;
       }
-      case "appIds":
-        account = updateConfiguration(store, account, { appIds: await promptGameAppIds(account) });
-        pauseMessage("Game AppIDs saved.");
+      case "appIds": {
+        const appIds = await promptGameAppIds(store, account);
+        if (appIds === null) {
+          pauseMessage("No changes saved.");
+          break;
+        }
+        account = updateConfiguration(store, account, { appIds });
+        pauseMessage("Boosted games saved.");
         break;
+      }
       case "visibility":
         account = updateConfiguration(store, account, { visible: await promptVisibility(account) });
         pauseMessage("Visibility saved.");
