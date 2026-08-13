@@ -16,6 +16,22 @@ type SteamUserWithMachineTokenEvent = SteamUser & {
 
 type SteamError = Error & { eresult?: number };
 
+type WebLogOnClient = {
+  steamID: unknown;
+  webLogOn(): void;
+};
+
+export function guardWebLogOnAfterDisconnect(client: WebLogOnClient): void {
+  const webLogOn = client.webLogOn.bind(client);
+  client.webLogOn = () => {
+    // steam-user automatically continues into webLogOn after its async refresh-token renewal.
+    // A fatal disconnect during that renewal clears steamID and would otherwise throw here.
+    if (client.steamID) {
+      webLogOn();
+    }
+  };
+}
+
 function isAuthenticationError(error: SteamError): boolean {
   return /InvalidPassword|AccessDenied|Expired|Revoked/iu.test(error.message);
 }
@@ -128,6 +144,7 @@ export class AccountWorker {
       dataDirectory: null,
       enablePicsCache: false
     });
+    guardWebLogOnAfterDisconnect(client);
     this.#client = client;
     this.#record = this.store.updateRuntime(account.id, { status: "connecting", lastError: null });
     logger.info("Connecting Steam account", { account: account.accountName });
@@ -216,7 +233,10 @@ export class AccountWorker {
     }
     const snapshot = this.#record;
     void presence.apply(snapshot).then(
-      () => {
+      (applied) => {
+        if (!applied || presence !== this.#presence) {
+          return;
+        }
         logger.info("Steam presence applied", {
           account: snapshot.accountName,
           games: snapshot.appIds.length,

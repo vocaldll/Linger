@@ -40,9 +40,9 @@ export class PresenceController {
     private readonly onLicenseError: (error: unknown) => void = () => {}
   ) {}
 
-  async apply(configuration: AccountConfiguration): Promise<void> {
+  async apply(configuration: AccountConfiguration): Promise<boolean> {
     if (this.#disposed) {
-      return;
+      return false;
     }
     const revision = ++this.#revision;
     const plan = buildPresencePlan(configuration);
@@ -51,7 +51,7 @@ export class PresenceController {
         configuration.visible ? SteamUser.EPersonaState.Online : SteamUser.EPersonaState.Invisible
       );
       this.client.gamesPlayed(plan.games);
-      return;
+      return true;
     }
 
     // Start the configured games first, then add the helper apps and leave them running. This
@@ -59,17 +59,22 @@ export class PresenceController {
     this.client.setPersona(SteamUser.EPersonaState.Invisible);
     this.client.gamesPlayed(plan.baseGames);
     await Promise.all([
-      this.#requestRecentActivityLicenses().catch((error) => this.onLicenseError(error)),
+      this.#requestRecentActivityLicenses().catch((error) => {
+        if (!this.#disposed && revision === this.#revision) {
+          this.onLicenseError(error);
+        }
+      }),
       this.#delay()
     ]);
     if (this.#disposed || revision !== this.#revision) {
-      return;
+      return false;
     }
 
     this.client.gamesPlayed(plan.games);
     this.client.setPersona(
       configuration.visible ? SteamUser.EPersonaState.Online : SteamUser.EPersonaState.Invisible
     );
+    return true;
   }
 
   dispose(): void {

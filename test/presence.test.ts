@@ -51,7 +51,7 @@ describe("Steam presence", () => {
       licenseErrors += 1;
     });
 
-    await presence.apply({
+    const applied = await presence.apply({
       appIds: [730],
       customGame: null,
       visible: true,
@@ -64,5 +64,35 @@ describe("Steam presence", () => {
     ]);
     assert.deepEqual(personas, [SteamUser.EPersonaState.Invisible, SteamUser.EPersonaState.Online]);
     assert.equal(licenseErrors, 1);
+    assert.equal(applied, true);
+  });
+
+  it("does not report disposed recent-activity work as applied", async () => {
+    let rejectLicense!: (error: Error) => void;
+    let licenseErrors = 0;
+    const client = {
+      setPersona() {},
+      gamesPlayed() {},
+      requestFreeLicense() {
+        return new Promise((_resolve, reject) => {
+          rejectLicense = reject;
+        });
+      }
+    } as unknown as SteamUser;
+    const presence = new PresenceController(client, 0, () => {
+      licenseErrors += 1;
+    });
+
+    const applying = presence.apply({
+      appIds: [730],
+      customGame: null,
+      visible: true,
+      clearRecentActivity: true
+    });
+    presence.dispose();
+    rejectLicense(new Error("request completed after disconnect"));
+
+    assert.equal(await applying, false);
+    assert.equal(licenseErrors, 0);
   });
 });
