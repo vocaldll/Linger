@@ -6,13 +6,13 @@ import {
   isSpaceKey,
   isTabKey,
   isUpKey,
+  makeTheme,
   useKeypress,
   usePagination,
   usePrefix,
   useState,
   type Status
 } from "@inquirer/core";
-import { styleText } from "node:util";
 import {
   GAME_SORT_LABELS,
   filterOwnedGames,
@@ -21,6 +21,7 @@ import {
   type GameSort,
   type OwnedGame
 } from "../domain/game-library.js";
+import { LINGER_THEME, ui } from "./theme.js";
 
 export type GamePickerResult = {
   action: "save" | "cancel" | "manual" | "sort";
@@ -90,7 +91,7 @@ export const gamePicker: (
   );
   const [active, setActive] = useState(initialActive);
   const activeIndex = Math.min(active, Math.max(0, entries.length - 1));
-  const prefix = usePrefix({ status });
+  const prefix = usePrefix({ status, theme: makeTheme(LINGER_THEME) });
 
   const complete = (action: GamePickerResult["action"]): void => {
     const result: GamePickerResult = {
@@ -176,56 +177,53 @@ export const gamePicker: (
     loop: false,
     renderItem({ item, isActive }) {
       const checked = selectedAppIds.includes(item.appId);
-      const cursor = isActive ? styleText("cyan", "›") : " ";
-      const checkbox = checked ? styleText("green", "[x]") : "[ ]";
+      const cursor = isActive ? ui.accentStrong("›") : " ";
+      const checkbox = checked ? ui.success("[●]") : ui.muted("[ ]");
       const name = truncate(item.name, nameWidth).padEnd(nameWidth);
       const detail = item.manuallyAdded
         ? "manually added"
         : `${formatPlaytime(item.playtimeForever)} · AppID ${item.appId}`;
-      const row = `${cursor} ${checkbox} ${name} ${styleText("dim", detail)}`;
-      return isActive ? styleText("cyan", row) : row;
+      const row = `${cursor} ${checkbox} ${name} ${ui.muted(detail)}`;
+      return isActive ? ui.accentStrong(row) : row;
     }
   });
   const page =
     entries.length === 0
-      ? styleText(
-          "dim",
-          query ? "  No games match this search." : "  No library games available."
-        )
+      ? ui.muted(query ? "  No games match this search." : "  No library games available.")
       : paginatedEntries;
 
   if (status === "done") {
-    return `${prefix} Choose boosted games ${styleText("cyan", `${selectedAppIds.length} selected`)}`;
+    return `${prefix} Choose boosted games ${ui.accent(`${selectedAppIds.length} selected`)}`;
   }
 
   const count = `${selectedAppIds.length} / ${config.maximumSelected}`;
   const searchLine = searching
-    ? `${styleText("bold", "Search:")} ${query}${styleText("cyan", "_")}`
+    ? `${ui.strong("Search:")} ${query}${ui.accentStrong("_")}`
     : query
-      ? `${styleText("bold", "Filter:")} ${query}`
+      ? `${ui.strong("Filter:")} ${ui.accent(query)}`
       : null;
   const help = searching
-    ? `${styleText("bold", "type")} search · ${styleText("bold", "enter/tab")} browse · ${styleText("bold", "esc")} clear`
+    ? `${ui.key("type")} ${ui.muted("search")} · ${ui.key("enter/tab")} ${ui.muted("browse")} · ${ui.key("esc")} ${ui.muted("clear")}`
     : [
-        `${styleText("bold", "↑↓")} move`,
-        `${styleText("bold", "space")} toggle`,
-        `${styleText("bold", "/")} search`,
-        `${styleText("bold", "s")} sort`,
-        `${styleText("bold", "m")} enter AppIDs`,
-        `${styleText("bold", "enter")} save`,
-        `${styleText("bold", "esc")} clear/cancel`
-      ].join(styleText("dim", " · "));
+        `${ui.key("↑↓")} ${ui.muted("move")}`,
+        `${ui.key("space")} ${ui.muted("toggle")}`,
+        `${ui.key("/")} ${ui.muted("search")}`,
+        `${ui.key("s")} ${ui.muted("sort")}`,
+        `${ui.key("m")} ${ui.muted("enter AppIDs")}`,
+        `${ui.key("enter")} ${ui.muted("save")}`,
+        `${ui.key("esc")} ${ui.muted("clear/cancel")}`
+      ].join(ui.muted(" · "));
 
   return [
-    `${prefix} ${styleText("bold", "Choose boosted games")} ${styleText("cyan", count)}`,
-    `${styleText("dim", "Sort:")} ${GAME_SORT_LABELS[config.sort]}`,
+    `${prefix} ${ui.strong("Choose boosted games")} ${ui.accentStrong(count)}`,
+    `${ui.muted("Sort:")} ${GAME_SORT_LABELS[config.sort]}`,
     searchLine,
     "",
     page,
     "",
-    config.notice ? styleText("green", config.notice) : null,
-    error ? styleText("red", error) : null,
-    styleText("dim", help)
+    config.notice ? ui.success(`✓ ${config.notice}`) : null,
+    error ? ui.danger(`! ${error}`) : null,
+    help
   ]
     .filter((line): line is string => line !== null)
     .join("\n")

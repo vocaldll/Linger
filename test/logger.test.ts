@@ -21,7 +21,9 @@ describe("logger formatting", () => {
   });
 
   it("adds ANSI styling only when color is requested", () => {
+    const informational = formatLogLine("info", "Connected", {}, { color: true, date: DATE });
     const colored = formatLogLine("error", "Connection failed", {}, { color: true, date: DATE });
+    assert.match(informational, /\u001b\[38;2;154;111;188mINFO \u001b\[0m/u);
     assert.match(colored, /\u001b\[31mERROR\u001b\[0m/u);
     assert.doesNotMatch(formatLogLine("error", "Connection failed", {}, { date: DATE }), /\u001b\[/u);
   });

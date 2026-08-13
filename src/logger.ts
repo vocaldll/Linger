@@ -1,12 +1,22 @@
 import type { Writable } from "node:stream";
+import { PALETTE } from "./theme.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 export type LogFields = Record<string, boolean | number | string | null | undefined>;
 
 const priorities: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
+
+function ansiTrueColor(hex: `#${string}`): string {
+  const value = Number.parseInt(hex.slice(1), 16);
+  const red = (value >> 16) & 255;
+  const green = (value >> 8) & 255;
+  const blue = value & 255;
+  return `\u001b[38;2;${red};${green};${blue}m`;
+}
+
 const levelColors: Record<LogLevel, string> = {
   debug: "\u001b[90m",
-  info: "\u001b[36m",
+  info: ansiTrueColor(PALETTE.violet),
   warn: "\u001b[33m",
   error: "\u001b[31m"
 };

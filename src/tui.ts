@@ -30,6 +30,7 @@ import {
 } from "./steam/authentication.js";
 import { fetchOwnedGamesForLogin } from "./steam/game-library.js";
 import { gamePicker } from "./tui/game-picker.js";
+import { LINGER_THEME, printLingerHeader, ui } from "./tui/theme.js";
 
 const STATUS_LABELS: Record<Account["status"], string> = {
   disabled: "disabled",
@@ -65,7 +66,7 @@ export function filterAccountsForSearch<AccountType extends SearchableAccount>(
 }
 
 function printHeader(): void {
-  process.stdout.write("\nLinger · Steam hour booster\n\n");
+  printLingerHeader();
 }
 
 function pauseMessage(message: string): void {
@@ -94,12 +95,16 @@ function createAuthenticationInteraction(): AuthenticationInteraction {
     chooseGuard(choices) {
       return select({
         message: "Complete Steam Guard using",
+        theme: LINGER_THEME,
         choices: choices.map((choice) => ({ name: guardLabel(choice), value: choice }))
       });
     },
     requestGuardCode(choice, signal) {
       return input(
-        { message: choice.type === "email_code" ? "Email code" : "Authenticator code" },
+        {
+          message: choice.type === "email_code" ? "Email code" : "Authenticator code",
+          theme: LINGER_THEME
+        },
         { signal }
       );
     },
@@ -114,6 +119,7 @@ async function promptLoginMethod(
 ): Promise<{ method: LoginMethod; usedStoredMachineToken: boolean }> {
   const type = await select({
     message: "Sign in with",
+    theme: LINGER_THEME,
     choices: [
       { name: "Steam Mobile QR code", value: "qr" as const },
       { name: "Username and password", value: "credentials" as const }
@@ -123,11 +129,17 @@ async function promptLoginMethod(
     return { method: { type: "qr" }, usedStoredMachineToken: false };
   }
 
-  const accountName = existing?.accountName ?? (await input({ message: "Steam account name" })).trim();
+  const accountName =
+    existing?.accountName ??
+    (await input({ message: "Steam account name", theme: LINGER_THEME })).trim();
   if (!accountName) {
     throw new Error("Steam account name is required");
   }
-  const accountPassword = await password({ message: "Steam password", mask: "•" });
+  const accountPassword = await password({
+    message: "Steam password",
+    mask: "•",
+    theme: LINGER_THEME
+  });
   if (!accountPassword) {
     throw new Error("Steam password is required");
   }
@@ -192,6 +204,7 @@ async function promptGamePicker(
       sort = await select({
         message: "Sort games by",
         default: sort,
+        theme: LINGER_THEME,
         choices: (Object.entries(GAME_SORT_LABELS) as Array<[GameSort, string]>).map(
           ([value, name]) => ({ name, value })
         )
@@ -201,6 +214,7 @@ async function promptGamePicker(
 
     const value = await input({
       message: "Enter AppIDs (comma or space separated)",
+      theme: LINGER_THEME,
       validate(candidate) {
         if (!candidate.trim()) {
           return true;
@@ -242,6 +256,7 @@ async function promptConfiguration(
   const customGameValue = await input({
     message: "Custom game name (optional)",
     default: current?.customGame ?? "",
+    theme: LINGER_THEME,
     validate(value) {
       return value.trim().length <= MAX_CUSTOM_GAME_LENGTH
         ? true
@@ -251,7 +266,8 @@ async function promptConfiguration(
   const customGame = customGameValue.trim() || null;
   const clearRecentActivity = await confirm({
     message: "Clear recent activity while boosting?",
-    default: current?.clearRecentActivity ?? false
+    default: current?.clearRecentActivity ?? false,
+    theme: LINGER_THEME
   });
   const appIds = await promptGamePicker(ownedGames, current?.appIds ?? [], {
     customGame,
@@ -262,7 +278,8 @@ async function promptConfiguration(
   }
   const visible = await confirm({
     message: "Show this account as online and playing?",
-    default: current?.visible ?? true
+    default: current?.visible ?? true,
+    theme: LINGER_THEME
   });
 
   return { appIds, customGame, visible, clearRecentActivity };
@@ -288,6 +305,7 @@ function updateConfiguration(
 async function promptCustomGame(account: Account): Promise<string | null> {
   const value = await input({
     message: `Custom game title (current: ${account.customGame ?? "none"}; blank keeps, "-" clears)`,
+    theme: LINGER_THEME,
     validate(candidate) {
       const trimmed = candidate.trim();
       if (trimmed.length > MAX_CUSTOM_GAME_LENGTH) {
@@ -325,6 +343,7 @@ async function promptVisibility(account: Account): Promise<boolean> {
   ];
   return select({
     message: `Visibility (current: ${account.visible ? "visible" : "invisible"})`,
+    theme: LINGER_THEME,
     choices: account.visible ? choices : choices.reverse()
   });
 }
@@ -336,23 +355,34 @@ async function promptRecentActivity(account: Account): Promise<boolean> {
   ];
   return select({
     message: `Clear recent activity (current: ${account.clearRecentActivity ? "enabled" : "disabled"})`,
+    theme: LINGER_THEME,
     choices: account.clearRecentActivity ? choices : choices.reverse()
   });
 }
 
 function accountSummary(account: Account): string {
   const games = account.appIds.length > 0 ? account.appIds.join(", ") : "none";
+  const status =
+    account.status === "online"
+      ? ui.success(`● ${STATUS_LABELS[account.status]}`)
+      : account.status === "error" || account.status === "needs_auth"
+        ? ui.danger(`● ${STATUS_LABELS[account.status]}`)
+        : account.status === "disabled"
+          ? ui.muted(`● ${STATUS_LABELS[account.status]}`)
+          : ui.accent(`● ${STATUS_LABELS[account.status]}`);
+  const row = (label: string, value: string): string =>
+    `  ${ui.muted(label.padEnd(23))}${value}`;
   return [
-    `Account: ${account.accountName}`,
-    `SteamID: ${account.steamId ?? "unknown"}`,
-    `State: ${STATUS_LABELS[account.status]}`,
-    `Enabled: ${account.enabled ? "yes" : "no"}`,
-    `Visibility: ${account.visible ? "visible" : "invisible"}`,
-    `Clear recent activity: ${account.clearRecentActivity ? "enabled" : "disabled"}`,
-    `Boosted AppIDs: ${games}`,
-    `Custom game: ${account.customGame ?? "none"}`,
-    account.lastConnectedAt ? `Last connected: ${account.lastConnectedAt}` : null,
-    account.lastError ? `Last error: ${account.lastError}` : null
+    `  ${ui.accentStrong(account.accountName)}  ${status}`,
+    "",
+    row("Steam ID", account.steamId ?? "unknown"),
+    row("Enabled", account.enabled ? "yes" : "no"),
+    row("Visibility", account.visible ? "visible" : "invisible"),
+    row("Clear recent activity", account.clearRecentActivity ? "enabled" : "disabled"),
+    row("Boosted AppIDs", games),
+    row("Custom game", account.customGame ?? "none"),
+    account.lastConnectedAt ? row("Last connected", account.lastConnectedAt) : null,
+    account.lastError ? row("Last error", ui.danger(account.lastError)) : null
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
@@ -438,6 +468,7 @@ async function manageAccount(store: AccountStore, vault: CredentialVault, initia
     const action = await select({
       message: `Manage ${account.accountName}`,
       loop: false,
+      theme: LINGER_THEME,
       choices: [
         {
           name: `Custom game title · ${account.customGame ?? "none"}`,
@@ -517,7 +548,8 @@ async function manageAccount(store: AccountStore, vault: CredentialVault, initia
         if (
           await confirm({
             message: `Permanently delete ${account.accountName} from Linger?`,
-            default: false
+            default: false,
+            theme: LINGER_THEME
           })
         ) {
           store.delete(account.id);
@@ -539,6 +571,7 @@ async function chooseAccount(store: AccountStore): Promise<Account | null> {
   }
   return search<Account | null>({
     message: "Choose an account",
+    theme: LINGER_THEME,
     source(term) {
       return [
         ...filterAccountsForSearch(accounts, term).map((account) => ({
@@ -561,6 +594,7 @@ export async function runManagementTui(store: AccountStore, vault: CredentialVau
     printHeader();
     const action = await select({
       message: "What would you like to do?",
+      theme: LINGER_THEME,
       choices: [
         { name: "Add Steam account", value: "add" },
         { name: "Manage accounts", value: "accounts" },
