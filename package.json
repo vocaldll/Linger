@@ -15,8 +15,11 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.json --noEmit",
+    "check": "tsc -p tsconfig.json --noEmit && biome check .",
     "dev": "tsx src/cli.ts",
+    "fix": "biome check --write .",
+    "format": "biome format --write .",
+    "lint": "biome lint .",
     "start": "node dist/src/cli.js run",
     "manage": "node dist/src/cli.js manage",
     "test": "pnpm run build && node --test --enable-source-maps dist/**/*.test.js"
@@ -33,6 +36,7 @@
     "steam-user": "^5.3.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.8",
     "@inquirer/testing": "^3.3.9",
     "@types/node": "^26.2.0",
     "@types/qrcode-terminal": "^0.12.2",
