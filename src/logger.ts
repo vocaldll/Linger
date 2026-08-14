@@ -2,6 +2,7 @@ import type { Writable } from "node:stream";
 import { PALETTE } from "./theme.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
+export type LogSubsystem = "runner" | "steam" | "presence" | "library" | "cards";
 export type LogFields = Record<string, boolean | number | string | null | undefined>;
 
 const priorities: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
@@ -22,6 +23,8 @@ const levelColors: Record<LogLevel, string> = {
 };
 const RESET = "\u001b[0m";
 const DIM = "\u001b[2m";
+const ACCOUNT_COLOR = ansiTrueColor(PALETTE.lilac);
+const SUBSYSTEM_COLOR = ansiTrueColor(PALETTE.mist);
 
 function configuredThreshold(): number {
   const level = (process.env.LINGER_LOG_LEVEL ?? "info").toLowerCase() as LogLevel;
@@ -71,6 +74,7 @@ function formatFields(fields: LogFields, color: boolean): string {
 
 export function formatLogLine(
   level: LogLevel,
+  subsystem: LogSubsystem,
   message: string,
   fields: LogFields = {},
   options: { color?: boolean; date?: Date } = {}
@@ -78,14 +82,22 @@ export function formatLogLine(
   const color = options.color ?? false;
   const timestamp = `[${formatTimestamp(options.date ?? new Date())}]`;
   const label = level.toUpperCase().padEnd(5);
-  const details = formatFields(fields, color);
+  const account = typeof fields.account === "string" && fields.account
+    ? sanitizeMessage(fields.account)
+    : "—";
+  const accountColumn = account.padEnd(12);
+  const subsystemColumn = subsystem.padEnd(8);
+  const details = formatFields(
+    Object.fromEntries(Object.entries(fields).filter(([key]) => key !== "account")),
+    color
+  );
   const separator = details ? (color ? ` ${DIM}│${RESET} ` : " | ") : "";
 
   if (!color) {
-    return `${timestamp} ${label} ${sanitizeMessage(message)}${separator}${details}`;
+    return `${timestamp} ${label} ${accountColumn} ${subsystemColumn} ${sanitizeMessage(message)}${separator}${details}`;
   }
 
-  return `${DIM}${timestamp}${RESET} ${levelColors[level]}${label}${RESET} ${sanitizeMessage(message)}${separator}${details}`;
+  return `${DIM}${timestamp}${RESET} ${levelColors[level]}${label}${RESET} ${ACCOUNT_COLOR}${accountColumn}${RESET} ${SUBSYSTEM_COLOR}${subsystemColumn}${RESET} ${sanitizeMessage(message)}${separator}${details}`;
 }
 
 function shouldUseColor(stream: Writable): boolean {
@@ -98,18 +110,27 @@ function shouldUseColor(stream: Writable): boolean {
   return Boolean((stream as Writable & { isTTY?: boolean }).isTTY);
 }
 
-function write(level: LogLevel, message: string, fields: LogFields = {}): void {
+function write(
+  level: LogLevel,
+  subsystem: LogSubsystem,
+  message: string,
+  fields: LogFields = {}
+): void {
   if (priorities[level] < configuredThreshold()) {
     return;
   }
 
   const stream = level === "error" ? process.stderr : process.stdout;
-  stream.write(`${formatLogLine(level, message, fields, { color: shouldUseColor(stream) })}\n`);
+  stream.write(`${formatLogLine(level, subsystem, message, fields, { color: shouldUseColor(stream) })}\n`);
 }
 
 export const logger = {
-  debug: (message: string, fields?: LogFields) => write("debug", message, fields),
-  info: (message: string, fields?: LogFields) => write("info", message, fields),
-  warn: (message: string, fields?: LogFields) => write("warn", message, fields),
-  error: (message: string, fields?: LogFields) => write("error", message, fields)
+  debug: (subsystem: LogSubsystem, message: string, fields?: LogFields) =>
+    write("debug", subsystem, message, fields),
+  info: (subsystem: LogSubsystem, message: string, fields?: LogFields) =>
+    write("info", subsystem, message, fields),
+  warn: (subsystem: LogSubsystem, message: string, fields?: LogFields) =>
+    write("warn", subsystem, message, fields),
+  error: (subsystem: LogSubsystem, message: string, fields?: LogFields) =>
+    write("error", subsystem, message, fields)
 };

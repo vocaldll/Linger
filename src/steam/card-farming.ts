@@ -13,7 +13,7 @@ const ITEM_EVENT_DEBOUNCE_MS = 5_000;
 
 type CardFarmingStore = Pick<
   AccountStore,
-  "get" | "replaceCardFarmingQueue" | "finishCardFarming"
+  "get" | "listOwnedGames" | "replaceCardFarmingQueue" | "finishCardFarming"
 >;
 
 type CardFarmingCallbacks = {
@@ -29,6 +29,7 @@ export class CardFarmingController {
   #inFlight = false;
   #checkRequested = false;
   #disposed = false;
+  #activityAnnounced = false;
 
   constructor(
     private readonly store: CardFarmingStore,
@@ -42,13 +43,22 @@ export class CardFarmingController {
   reconcile(account: Account): void {
     const wasActive = this.#record.enabled && this.#record.cardFarmingEnabled;
     const previousAppId = this.#record.cardFarmingQueue[0]?.appId;
+    const stopped = wasActive && (!account.enabled || !account.cardFarmingEnabled);
     this.#record = account;
     if (!account.enabled || !account.cardFarmingEnabled) {
       this.#cancelTimer();
+      this.#activityAnnounced = false;
+      if (stopped) {
+        logger.info("cards", "Farming stopped", {
+          account: account.accountName,
+          next: account.enabled ? "hour-boosting" : "disabled"
+        });
+      }
       return;
     }
     const activeAppChanged = previousAppId !== account.cardFarmingQueue[0]?.appId;
     if (this.#cookies && (!wasActive || activeAppChanged || (!this.#timer && !this.#inFlight))) {
+      this.#announceResume();
       this.#schedule(0);
     }
   }
@@ -56,6 +66,7 @@ export class CardFarmingController {
   setWebSession(cookies: readonly string[]): void {
     this.#cookies = [...cookies];
     if (this.#record.enabled && this.#record.cardFarmingEnabled) {
+      this.#announceResume();
       this.#schedule(0);
     }
   }
@@ -90,14 +101,15 @@ export class CardFarmingController {
       }
       if (error instanceof SteamCommunityAuthenticationError) {
         this.#cookies = null;
-        logger.warn("Steam Community session expired while card farming; refreshing it", {
+        logger.warn("cards", "Community session expired; refreshing", {
           account: this.#record.accountName
         });
         this.callbacks.refreshWebSession();
       } else {
-        logger.warn("Could not check Steam card farming progress; will retry", {
+        logger.warn("cards", "Progress check failed; retry scheduled", {
           account: this.#record.accountName,
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? error.message : String(error),
+          retry: "2m"
         });
         this.#schedule(RETRY_INTERVAL_MS);
       }
@@ -145,11 +157,12 @@ export class CardFarmingController {
 
       const updated = this.store.replaceCardFarmingQueue(current.id, discovered);
       this.#publish(updated);
-      logger.info("Started Steam card farming", {
+      this.#activityAnnounced = true;
+      logger.info("cards", "Farming started", {
         account: updated.accountName,
-        appId: discovered[0]!.appId,
-        remainingDrops: discovered[0]!.remainingDrops,
-        queuedGames: discovered.length
+        ...this.#gameFields(discovered[0]!.appId),
+        drops: discovered[0]!.remainingDrops,
+        queued: discovered.length
       });
       this.callbacks.applyPresence(updated);
       this.#schedule(REGULAR_CHECK_INTERVAL_MS);
@@ -176,10 +189,10 @@ export class CardFarmingController {
         ];
         const updated = this.store.replaceCardFarmingQueue(current.id, queue);
         this.#publish(updated);
-        logger.info("Steam card farming progressed", {
+        logger.info("cards", "Drop count updated", {
           account: updated.accountName,
-          appId: active.appId,
-          remainingDrops
+          ...this.#gameFields(active.appId),
+          drops: remainingDrops
         });
       }
       this.#schedule(REGULAR_CHECK_INTERVAL_MS);
@@ -188,10 +201,10 @@ export class CardFarmingController {
 
     const nextQueue = current.cardFarmingQueue.slice(1);
     if (nextQueue.length === 0) {
-      logger.info("Finished farming Steam cards for a game", {
+      logger.info("cards", "Game complete", {
         account: current.accountName,
-        appId: active.appId,
-        queuedGames: 0
+        ...this.#gameFields(active.appId),
+        queued: 0
       });
       this.#finish(current);
       return;
@@ -199,12 +212,12 @@ export class CardFarmingController {
 
     const updated = this.store.replaceCardFarmingQueue(current.id, nextQueue);
     this.#publish(updated);
-    logger.info("Finished farming Steam cards; moving to the next game", {
+    logger.info("cards", "Next game", {
       account: updated.accountName,
-      finishedAppId: active.appId,
-      appId: nextQueue[0]!.appId,
-      remainingDrops: nextQueue[0]!.remainingDrops,
-      queuedGames: nextQueue.length
+      completedApp: active.appId,
+      ...this.#gameFields(nextQueue[0]!.appId),
+      drops: nextQueue[0]!.remainingDrops,
+      queued: nextQueue.length
     });
     this.callbacks.applyPresence(updated);
     this.#schedule(REGULAR_CHECK_INTERVAL_MS);
@@ -214,16 +227,34 @@ export class CardFarmingController {
     const updated = this.store.finishCardFarming(account.id);
     this.#publish(updated);
     this.callbacks.applyPresence(updated);
-    logger.info("Steam card farming completed", {
+    logger.info("cards", "Farming complete", {
       account: updated.accountName,
-      hourBoostingResumed: updated.enabled,
-      accountDisabled: !updated.enabled
+      next: updated.enabled ? "hour-boosting" : "disabled"
     });
   }
 
   #publish(account: Account): void {
     this.#record = account;
     this.callbacks.accountChanged(account);
+  }
+
+  #gameFields(appId: number): { game?: string; app: number } {
+    const game = this.store.listOwnedGames(this.#record.id).find((candidate) => candidate.appId === appId);
+    return { ...(game ? { game: game.name } : {}), app: appId };
+  }
+
+  #announceResume(): void {
+    const active = this.#record.cardFarmingQueue[0];
+    if (this.#activityAnnounced || !active) {
+      return;
+    }
+    this.#activityAnnounced = true;
+    logger.info("cards", "Farming resumed", {
+      account: this.#record.accountName,
+      ...this.#gameFields(active.appId),
+      drops: active.remainingDrops,
+      queued: this.#record.cardFarmingQueue.length
+    });
   }
 
   #schedule(delay: number): void {

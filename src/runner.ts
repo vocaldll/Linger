@@ -42,7 +42,7 @@ export class Runner {
   }
 
   async #run(): Promise<void> {
-    logger.info("Linger runner started");
+    logger.info("runner", "Started");
     try {
       while (this.#running) {
         this.store.heartbeatRunner(this.#ownerId);
@@ -61,7 +61,7 @@ export class Runner {
         try {
           worker.stop();
         } catch (error) {
-          logger.error("Could not stop Steam account cleanly", {
+          logger.error("runner", "Could not stop account cleanly", {
             account: worker.accountName,
             error: error instanceof Error ? error.message : String(error)
           });
@@ -69,7 +69,7 @@ export class Runner {
       }
       this.#workers.clear();
       this.store.releaseRunner(this.#ownerId);
-      logger.info("Linger runner stopped");
+      logger.info("runner", "Stopped");
     }
   }
 
@@ -82,7 +82,7 @@ export class Runner {
         try {
           worker.stop();
         } catch (error) {
-          logger.error("Could not stop removed Steam account cleanly", {
+          logger.error("runner", "Could not stop removed account cleanly", {
             account: worker.accountName,
             error: error instanceof Error ? error.message : String(error)
           });
@@ -100,7 +100,7 @@ export class Runner {
       try {
         worker.reconcile(account);
       } catch (error) {
-        logger.error("Could not reconcile Steam account", {
+        logger.error("runner", "Could not reconcile account", {
           account: account.accountName,
           error: error instanceof Error ? error.message : String(error)
         });

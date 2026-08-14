@@ -126,6 +126,43 @@ describe("card farming controller", () => {
     store.close();
   });
 
+  it("announces a persisted farming queue once and reports when it stops", () => {
+    const store = createStore();
+    const account = createAccount(store, [730]);
+    const queued = store.replaceCardFarmingQueue(account.id, [{ appId: 440, remainingDrops: 2 }]);
+    const output: string[] = [];
+    const originalWrite = process.stdout.write;
+    const originalLogLevel = process.env.LINGER_LOG_LEVEL;
+    let controller: CardFarmingController | null = null;
+    process.env.LINGER_LOG_LEVEL = "info";
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      output.push(chunk.toString());
+      return true;
+    }) as typeof process.stdout.write;
+
+    try {
+      controller = createController(store, queued, new FakeCommunity([]), []);
+      controller.setWebSession(["session=renewed"]);
+      assert.equal(output.filter((line) => line.includes("cards    Farming resumed")).length, 1);
+      assert.match(output.join(""), /app=440 drops=2 queued=1/u);
+
+      const stopped = store.setCardFarmingEnabled(account.id, false);
+      controller.reconcile(stopped);
+      controller.reconcile(stopped);
+      assert.equal(output.filter((line) => line.includes("cards    Farming stopped")).length, 1);
+      assert.match(output.join(""), /Farming stopped \| next=hour-boosting/u);
+    } finally {
+      process.stdout.write = originalWrite;
+      if (originalLogLevel === undefined) {
+        delete process.env.LINGER_LOG_LEVEL;
+      } else {
+        process.env.LINGER_LOG_LEVEL = originalLogLevel;
+      }
+      controller?.dispose();
+      store.close();
+    }
+  });
+
   it("keeps farming enabled when discovery fails", async () => {
     const store = createStore();
     const account = createAccount(store, []);

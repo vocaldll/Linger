@@ -16,6 +16,7 @@ type SteamUserWithMachineTokenEvent = SteamUser & {
 };
 
 type SteamError = Error & { eresult?: number };
+type AppliedPresenceMode = "card-farming" | "hour-boosting";
 
 type WebLogOnClient = {
   steamID: unknown;
@@ -62,6 +63,7 @@ export class AccountWorker {
   #generation = 0;
   #retryAttempt = 0;
   #retryAt = 0;
+  #appliedPresenceMode: AppliedPresenceMode | null = null;
 
   constructor(
     private readonly store: AccountStore,
@@ -92,6 +94,7 @@ export class AccountWorker {
     this.#cardFarming?.reconcile(next);
 
     if (!next.enabled) {
+      this.#stopHourBoosting("disabled");
       this.#disconnect();
       this.#retryAt = 0;
       this.#retryAttempt = 0;
@@ -152,7 +155,7 @@ export class AccountWorker {
     guardWebLogOnAfterDisconnect(client);
     this.#client = client;
     this.#record = this.store.updateRuntime(account.id, { status: "connecting", lastError: null });
-    logger.info("Connecting Steam account", { account: account.accountName });
+    logger.info("steam", "Connecting", { account: account.accountName });
 
     client.on("loggedOn", () => {
       if (!this.#isCurrent(generation, client)) {
@@ -163,7 +166,7 @@ export class AccountWorker {
       this.#retryAt = 0;
       this.#presence?.dispose();
       this.#presence = new PresenceController(client, 3_000, (error) => {
-        logger.warn("Could not request recent-activity helper licenses; continuing", {
+        logger.warn("presence", "Recent-activity helpers unavailable; continuing", {
           account: this.#record.accountName,
           error: error instanceof Error ? error.message : String(error)
         });
@@ -188,7 +191,7 @@ export class AccountWorker {
           try {
             client.webLogOn();
           } catch (error) {
-            logger.warn("Could not refresh Steam Community session", {
+            logger.warn("cards", "Could not refresh Community session", {
               account: this.#record.accountName,
               error: error instanceof Error ? error.message : String(error)
             });
@@ -206,7 +209,7 @@ export class AccountWorker {
           lastConnectedAt: new Date().toISOString()
         });
       }
-      logger.info("Steam account connected", {
+      logger.info("steam", "Connected", {
         account: account.accountName,
         steamId: client.steamID?.getSteamID64() ?? null
       });
@@ -219,7 +222,7 @@ export class AccountWorker {
       this.#record = this.store.updateRuntime(account.id, {
         refreshTokenEncrypted: this.vault.encrypt(token)
       });
-      logger.debug("Saved renewed Steam token", { account: account.accountName });
+      logger.debug("steam", "Saved renewed token", { account: account.accountName });
     });
 
     (client as SteamUserWithMachineTokenEvent).on("machineAuthToken", (token) => {
@@ -287,17 +290,41 @@ export class AccountWorker {
         if (!applied || presence !== this.#presence) {
           return;
         }
-        logger.info("Steam presence applied", {
-          account: snapshot.accountName,
-          mode: snapshot.cardFarmingEnabled ? "card-farming" : "hour-boosting",
-          games: snapshot.cardFarmingEnabled ? (snapshot.cardFarmingQueue[0] ? 1 : 0) : snapshot.appIds.length,
-          customGame: snapshot.customGame,
-          visible: snapshot.visible,
-          clearRecentActivity: snapshot.clearRecentActivity
-        });
+        if (!snapshot.enabled) {
+          this.#appliedPresenceMode = null;
+          return;
+        }
+        const mode: AppliedPresenceMode = snapshot.cardFarmingEnabled
+          ? "card-farming"
+          : "hour-boosting";
+        if (mode === "card-farming" && !snapshot.cardFarmingQueue[0]) {
+          if (this.#appliedPresenceMode === "hour-boosting") {
+            this.#stopHourBoosting("card-farming");
+          }
+          return;
+        }
+        const fields = snapshot.cardFarmingEnabled
+          ? {
+              account: snapshot.accountName,
+              visibility: snapshot.visible ? "online" : "invisible"
+            }
+          : {
+              account: snapshot.accountName,
+              games: snapshot.appIds.length,
+              ...(snapshot.customGame ? { customGame: snapshot.customGame } : {}),
+              visibility: snapshot.visible ? "online" : "invisible",
+              ...(snapshot.clearRecentActivity ? { clearRecentActivity: true } : {})
+            };
+        if (this.#appliedPresenceMode === "hour-boosting" && mode === "card-farming") {
+          this.#stopHourBoosting("card-farming");
+        }
+        const label = mode === "card-farming" ? "Card farming" : "Hour boosting";
+        const action = this.#appliedPresenceMode === mode ? "updated" : "started";
+        logger.info("presence", `${label} ${action}`, fields);
+        this.#appliedPresenceMode = mode;
       },
       (error: unknown) => {
-        logger.error("Could not apply Steam presence", {
+        logger.error("presence", "Could not apply", {
           account: snapshot.accountName,
           error: error instanceof Error ? error.message : String(error)
         });
@@ -316,13 +343,13 @@ export class AccountWorker {
         return;
       }
       this.store.replaceOwnedGames(accountId, games);
-      logger.info("Steam game library cached", {
+      logger.debug("library", "Cached", {
         account: this.#record.accountName,
         games: games.length
       });
     } catch (error) {
       if (this.#isCurrent(generation, client)) {
-        logger.warn("Could not refresh Steam game library; keeping the existing cache", {
+        logger.warn("library", "Refresh failed; using existing cache", {
           account: this.#record.accountName,
           error: error instanceof Error ? error.message : String(error)
         });
@@ -340,7 +367,7 @@ export class AccountWorker {
         status: "needs_auth",
         lastError: error.message
       });
-      logger.error("Steam account needs re-authentication", {
+      logger.error("steam", "Reauthentication required", {
         account: account.accountName,
         error: error.message
       });
@@ -356,10 +383,10 @@ export class AccountWorker {
       status: "backoff",
       lastError: error.message
     });
-    logger.warn("Steam account disconnected; retry scheduled", {
+    logger.warn("steam", "Disconnected; retry scheduled", {
       account: account.accountName,
       error: error.message,
-      retrySeconds: Math.ceil(delay / 1_000)
+      retry: `${Math.ceil(delay / 1_000)}s`
     });
   }
 
@@ -371,11 +398,23 @@ export class AccountWorker {
     this.#presence = null;
     this.#cardFarming?.dispose();
     this.#cardFarming = null;
+    this.#appliedPresenceMode = null;
     this.#connecting = false;
     if (client) {
       client.removeAllListeners();
       client.logOff();
     }
+  }
+
+  #stopHourBoosting(next: "card-farming" | "disabled"): void {
+    if (this.#appliedPresenceMode !== "hour-boosting") {
+      return;
+    }
+    logger.info("presence", "Hour boosting stopped", {
+      account: this.#record.accountName,
+      next
+    });
+    this.#appliedPresenceMode = null;
   }
 
   #isCurrent(generation: number, client: SteamUser): boolean {
