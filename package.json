@@ -5,6 +5,7 @@
   "description": "Multi-account Steam hour booster and card farmer built on steam-user",
   "type": "module",
   "author": "vocal",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/vocaldll/Linger.git"
