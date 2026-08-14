@@ -1,6 +1,7 @@
 {
 	"name": "linger",
 	"version": "0.1.0",
+	"private": true,
 	"packageManager": "pnpm@11.20.0",
 	"description": "Multi-account Steam hour booster and card farmer built on steam-user",
 	"type": "module",
