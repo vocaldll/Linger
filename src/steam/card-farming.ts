@@ -1,10 +1,10 @@
-import type { Account } from "../domain/account.js";
 import type { AccountStore } from "../database.js";
+import type { Account } from "../domain/account.js";
 import { logger } from "../logger.js";
 import {
-  SteamCommunityAuthenticationError,
-  SteamCommunityCardService,
-  type CardCommunity
+	type CardCommunity,
+	SteamCommunityAuthenticationError,
+	SteamCommunityCardService,
 } from "./community-cards.js";
 
 const REGULAR_CHECK_INTERVAL_MS = 15 * 60 * 1_000;
@@ -12,272 +12,292 @@ const RETRY_INTERVAL_MS = 2 * 60 * 1_000;
 const ITEM_EVENT_DEBOUNCE_MS = 5_000;
 
 type CardFarmingStore = Pick<
-  AccountStore,
-  "get" | "listOwnedGames" | "replaceCardFarmingQueue" | "finishCardFarming"
+	AccountStore,
+	"get" | "listOwnedGames" | "replaceCardFarmingQueue" | "finishCardFarming"
 >;
 
 type CardFarmingCallbacks = {
-  accountChanged(account: Account): void;
-  applyPresence(account: Account): void;
-  refreshWebSession(): void;
+	accountChanged(account: Account): void;
+	applyPresence(account: Account): void;
+	refreshWebSession(): void;
 };
 
 export class CardFarmingController {
-  #record: Account;
-  #cookies: string[] | null = null;
-  #timer: NodeJS.Timeout | null = null;
-  #inFlight = false;
-  #checkRequested = false;
-  #disposed = false;
-  #activityAnnounced = false;
+	#record: Account;
+	#cookies: string[] | null = null;
+	#timer: NodeJS.Timeout | null = null;
+	#inFlight = false;
+	#checkRequested = false;
+	#disposed = false;
+	#activityAnnounced = false;
 
-  constructor(
-    private readonly store: CardFarmingStore,
-    account: Account,
-    private readonly callbacks: CardFarmingCallbacks,
-    private readonly community: CardCommunity = new SteamCommunityCardService()
-  ) {
-    this.#record = account;
-  }
+	constructor(
+		private readonly store: CardFarmingStore,
+		account: Account,
+		private readonly callbacks: CardFarmingCallbacks,
+		private readonly community: CardCommunity = new SteamCommunityCardService(),
+	) {
+		this.#record = account;
+	}
 
-  reconcile(account: Account): void {
-    const wasActive = this.#record.enabled && this.#record.cardFarmingEnabled;
-    const previousAppId = this.#record.cardFarmingQueue[0]?.appId;
-    const stopped = wasActive && (!account.enabled || !account.cardFarmingEnabled);
-    this.#record = account;
-    if (!account.enabled || !account.cardFarmingEnabled) {
-      this.#cancelTimer();
-      this.#activityAnnounced = false;
-      if (stopped) {
-        logger.info("cards", "Farming stopped", {
-          account: account.accountName,
-          next: account.enabled ? "hour-boosting" : "disabled"
-        });
-      }
-      return;
-    }
-    const activeAppChanged = previousAppId !== account.cardFarmingQueue[0]?.appId;
-    if (this.#cookies && (!wasActive || activeAppChanged || (!this.#timer && !this.#inFlight))) {
-      this.#announceResume();
-      this.#schedule(0);
-    }
-  }
+	reconcile(account: Account): void {
+		const wasActive = this.#record.enabled && this.#record.cardFarmingEnabled;
+		const previousAppId = this.#record.cardFarmingQueue[0]?.appId;
+		const stopped =
+			wasActive && (!account.enabled || !account.cardFarmingEnabled);
+		this.#record = account;
+		if (!account.enabled || !account.cardFarmingEnabled) {
+			this.#cancelTimer();
+			this.#activityAnnounced = false;
+			if (stopped) {
+				logger.info("cards", "Farming stopped", {
+					account: account.accountName,
+					next: account.enabled ? "hour-boosting" : "disabled",
+				});
+			}
+			return;
+		}
+		const activeAppChanged =
+			previousAppId !== account.cardFarmingQueue[0]?.appId;
+		if (
+			this.#cookies &&
+			(!wasActive || activeAppChanged || (!this.#timer && !this.#inFlight))
+		) {
+			this.#announceResume();
+			this.#schedule(0);
+		}
+	}
 
-  setWebSession(cookies: readonly string[]): void {
-    this.#cookies = [...cookies];
-    if (this.#record.enabled && this.#record.cardFarmingEnabled) {
-      this.#announceResume();
-      this.#schedule(0);
-    }
-  }
+	setWebSession(cookies: readonly string[]): void {
+		this.#cookies = [...cookies];
+		if (this.#record.enabled && this.#record.cardFarmingEnabled) {
+			this.#announceResume();
+			this.#schedule(0);
+		}
+	}
 
-  notifyNewItems(): void {
-    if (this.#record.enabled && this.#record.cardFarmingEnabled && this.#cookies) {
-      this.#schedule(ITEM_EVENT_DEBOUNCE_MS);
-    }
-  }
+	notifyNewItems(): void {
+		if (
+			this.#record.enabled &&
+			this.#record.cardFarmingEnabled &&
+			this.#cookies
+		) {
+			this.#schedule(ITEM_EVENT_DEBOUNCE_MS);
+		}
+	}
 
-  async checkNow(): Promise<void> {
-    if (
-      this.#disposed ||
-      !this.#cookies ||
-      !this.#record.enabled ||
-      !this.#record.cardFarmingEnabled
-    ) {
-      return;
-    }
-    if (this.#inFlight) {
-      this.#checkRequested = true;
-      return;
-    }
+	async checkNow(): Promise<void> {
+		if (
+			this.#disposed ||
+			!this.#cookies ||
+			!this.#record.enabled ||
+			!this.#record.cardFarmingEnabled
+		) {
+			return;
+		}
+		if (this.#inFlight) {
+			this.#checkRequested = true;
+			return;
+		}
 
-    this.#cancelTimer();
-    this.#inFlight = true;
-    try {
-      await this.#check();
-    } catch (error) {
-      if (this.#disposed) {
-        return;
-      }
-      if (error instanceof SteamCommunityAuthenticationError) {
-        this.#cookies = null;
-        logger.warn("cards", "Community session expired; refreshing", {
-          account: this.#record.accountName
-        });
-        this.callbacks.refreshWebSession();
-      } else {
-        logger.warn("cards", "Progress check failed; retry scheduled", {
-          account: this.#record.accountName,
-          error: error instanceof Error ? error.message : String(error),
-          retry: "2m"
-        });
-        this.#schedule(RETRY_INTERVAL_MS);
-      }
-    } finally {
-      this.#inFlight = false;
-      if (this.#checkRequested && !this.#disposed) {
-        this.#checkRequested = false;
-        this.#schedule(0);
-      }
-    }
-  }
+		this.#cancelTimer();
+		this.#inFlight = true;
+		try {
+			await this.#check();
+		} catch (error) {
+			if (this.#disposed) {
+				return;
+			}
+			if (error instanceof SteamCommunityAuthenticationError) {
+				this.#cookies = null;
+				logger.warn("cards", "Community session expired; refreshing", {
+					account: this.#record.accountName,
+				});
+				this.callbacks.refreshWebSession();
+			} else {
+				logger.warn("cards", "Progress check failed; retry scheduled", {
+					account: this.#record.accountName,
+					error: error instanceof Error ? error.message : String(error),
+					retry: "2m",
+				});
+				this.#schedule(RETRY_INTERVAL_MS);
+			}
+		} finally {
+			this.#inFlight = false;
+			if (this.#checkRequested && !this.#disposed) {
+				this.#checkRequested = false;
+				this.#schedule(0);
+			}
+		}
+	}
 
-  dispose(): void {
-    this.#disposed = true;
-    this.#cookies = null;
-    this.#cancelTimer();
-  }
+	dispose(): void {
+		this.#disposed = true;
+		this.#cookies = null;
+		this.#cancelTimer();
+	}
 
-  async #check(): Promise<void> {
-    const cookies = this.#cookies;
-    if (!cookies) {
-      return;
-    }
-    const latest = this.store.get(this.#record.id);
-    if (!latest || !latest.enabled || !latest.cardFarmingEnabled) {
-      return;
-    }
-    this.#record = latest;
+	async #check(): Promise<void> {
+		const cookies = this.#cookies;
+		if (!cookies) {
+			return;
+		}
+		const latest = this.store.get(this.#record.id);
+		if (!latest?.enabled || !latest.cardFarmingEnabled) {
+			return;
+		}
+		this.#record = latest;
 
-    if (latest.cardFarmingQueue.length === 0) {
-      const discovered = await this.community.discoverFarmableGames(cookies);
-      const current = this.store.get(latest.id);
-      if (
-        !current ||
-        !current.enabled ||
-        !current.cardFarmingEnabled ||
-        current.cardFarmingQueue.length > 0
-      ) {
-        return;
-      }
-      if (discovered.length === 0) {
-        this.#finish(current);
-        return;
-      }
+		if (latest.cardFarmingQueue.length === 0) {
+			const discovered = await this.community.discoverFarmableGames(cookies);
+			const current = this.store.get(latest.id);
+			if (
+				!current?.enabled ||
+				!current.cardFarmingEnabled ||
+				current.cardFarmingQueue.length > 0
+			) {
+				return;
+			}
+			const firstDiscovered = discovered[0];
+			if (firstDiscovered === undefined) {
+				this.#finish(current);
+				return;
+			}
 
-      const updated = this.store.replaceCardFarmingQueue(current.id, discovered);
-      this.#publish(updated);
-      this.#activityAnnounced = true;
-      logger.info("cards", "Farming started", {
-        account: updated.accountName,
-        ...this.#gameFields(discovered[0]!.appId),
-        drops: discovered[0]!.remainingDrops,
-        queued: discovered.length
-      });
-      this.callbacks.applyPresence(updated);
-      this.#schedule(REGULAR_CHECK_INTERVAL_MS);
-      return;
-    }
+			const updated = this.store.replaceCardFarmingQueue(
+				current.id,
+				discovered,
+			);
+			this.#publish(updated);
+			this.#activityAnnounced = true;
+			logger.info("cards", "Farming started", {
+				account: updated.accountName,
+				...this.#gameFields(firstDiscovered.appId),
+				drops: firstDiscovered.remainingDrops,
+				queued: discovered.length,
+			});
+			this.callbacks.applyPresence(updated);
+			this.#schedule(REGULAR_CHECK_INTERVAL_MS);
+			return;
+		}
 
-    const active = latest.cardFarmingQueue[0]!;
-    const remainingDrops = await this.community.getRemainingDrops(cookies, active.appId);
-    const current = this.store.get(latest.id);
-    if (
-      !current ||
-      !current.enabled ||
-      !current.cardFarmingEnabled ||
-      current.cardFarmingQueue[0]?.appId !== active.appId
-    ) {
-      return;
-    }
+		const active = latest.cardFarmingQueue[0];
+		if (active === undefined) {
+			return;
+		}
+		const remainingDrops = await this.community.getRemainingDrops(
+			cookies,
+			active.appId,
+		);
+		const current = this.store.get(latest.id);
+		if (
+			!current?.enabled ||
+			!current.cardFarmingEnabled ||
+			current.cardFarmingQueue[0]?.appId !== active.appId
+		) {
+			return;
+		}
 
-    if (remainingDrops > 0) {
-      if (remainingDrops !== active.remainingDrops) {
-        const queue = [
-          { appId: active.appId, remainingDrops },
-          ...current.cardFarmingQueue.slice(1)
-        ];
-        const updated = this.store.replaceCardFarmingQueue(current.id, queue);
-        this.#publish(updated);
-        logger.info("cards", "Drop count updated", {
-          account: updated.accountName,
-          ...this.#gameFields(active.appId),
-          drops: remainingDrops
-        });
-      }
-      this.#schedule(REGULAR_CHECK_INTERVAL_MS);
-      return;
-    }
+		if (remainingDrops > 0) {
+			if (remainingDrops !== active.remainingDrops) {
+				const queue = [
+					{ appId: active.appId, remainingDrops },
+					...current.cardFarmingQueue.slice(1),
+				];
+				const updated = this.store.replaceCardFarmingQueue(current.id, queue);
+				this.#publish(updated);
+				logger.info("cards", "Drop count updated", {
+					account: updated.accountName,
+					...this.#gameFields(active.appId),
+					drops: remainingDrops,
+				});
+			}
+			this.#schedule(REGULAR_CHECK_INTERVAL_MS);
+			return;
+		}
 
-    const nextQueue = current.cardFarmingQueue.slice(1);
-    if (nextQueue.length === 0) {
-      logger.info("cards", "Game complete", {
-        account: current.accountName,
-        ...this.#gameFields(active.appId),
-        queued: 0
-      });
-      this.#finish(current);
-      return;
-    }
+		const nextQueue = current.cardFarmingQueue.slice(1);
+		const next = nextQueue[0];
+		if (next === undefined) {
+			logger.info("cards", "Game complete", {
+				account: current.accountName,
+				...this.#gameFields(active.appId),
+				queued: 0,
+			});
+			this.#finish(current);
+			return;
+		}
 
-    const updated = this.store.replaceCardFarmingQueue(current.id, nextQueue);
-    this.#publish(updated);
-    logger.info("cards", "Next game", {
-      account: updated.accountName,
-      completedApp: active.appId,
-      ...this.#gameFields(nextQueue[0]!.appId),
-      drops: nextQueue[0]!.remainingDrops,
-      queued: nextQueue.length
-    });
-    this.callbacks.applyPresence(updated);
-    this.#schedule(REGULAR_CHECK_INTERVAL_MS);
-  }
+		const updated = this.store.replaceCardFarmingQueue(current.id, nextQueue);
+		this.#publish(updated);
+		logger.info("cards", "Next game", {
+			account: updated.accountName,
+			completedApp: active.appId,
+			...this.#gameFields(next.appId),
+			drops: next.remainingDrops,
+			queued: nextQueue.length,
+		});
+		this.callbacks.applyPresence(updated);
+		this.#schedule(REGULAR_CHECK_INTERVAL_MS);
+	}
 
-  #finish(account: Account): void {
-    const updated = this.store.finishCardFarming(account.id);
-    this.#publish(updated);
-    this.callbacks.applyPresence(updated);
-    logger.info("cards", "Farming complete", {
-      account: updated.accountName,
-      next: updated.enabled ? "hour-boosting" : "disabled"
-    });
-  }
+	#finish(account: Account): void {
+		const updated = this.store.finishCardFarming(account.id);
+		this.#publish(updated);
+		this.callbacks.applyPresence(updated);
+		logger.info("cards", "Farming complete", {
+			account: updated.accountName,
+			next: updated.enabled ? "hour-boosting" : "disabled",
+		});
+	}
 
-  #publish(account: Account): void {
-    this.#record = account;
-    this.callbacks.accountChanged(account);
-  }
+	#publish(account: Account): void {
+		this.#record = account;
+		this.callbacks.accountChanged(account);
+	}
 
-  #gameFields(appId: number): { game?: string; app: number } {
-    const game = this.store.listOwnedGames(this.#record.id).find((candidate) => candidate.appId === appId);
-    return { ...(game ? { game: game.name } : {}), app: appId };
-  }
+	#gameFields(appId: number): { game?: string; app: number } {
+		const game = this.store
+			.listOwnedGames(this.#record.id)
+			.find((candidate) => candidate.appId === appId);
+		return { ...(game ? { game: game.name } : {}), app: appId };
+	}
 
-  #announceResume(): void {
-    const active = this.#record.cardFarmingQueue[0];
-    if (this.#activityAnnounced || !active) {
-      return;
-    }
-    this.#activityAnnounced = true;
-    logger.info("cards", "Farming resumed", {
-      account: this.#record.accountName,
-      ...this.#gameFields(active.appId),
-      drops: active.remainingDrops,
-      queued: this.#record.cardFarmingQueue.length
-    });
-  }
+	#announceResume(): void {
+		const active = this.#record.cardFarmingQueue[0];
+		if (this.#activityAnnounced || !active) {
+			return;
+		}
+		this.#activityAnnounced = true;
+		logger.info("cards", "Farming resumed", {
+			account: this.#record.accountName,
+			...this.#gameFields(active.appId),
+			drops: active.remainingDrops,
+			queued: this.#record.cardFarmingQueue.length,
+		});
+	}
 
-  #schedule(delay: number): void {
-    if (
-      this.#disposed ||
-      !this.#cookies ||
-      !this.#record.enabled ||
-      !this.#record.cardFarmingEnabled
-    ) {
-      return;
-    }
-    this.#cancelTimer();
-    this.#timer = setTimeout(() => {
-      this.#timer = null;
-      void this.checkNow();
-    }, delay);
-    this.#timer.unref();
-  }
+	#schedule(delay: number): void {
+		if (
+			this.#disposed ||
+			!this.#cookies ||
+			!this.#record.enabled ||
+			!this.#record.cardFarmingEnabled
+		) {
+			return;
+		}
+		this.#cancelTimer();
+		this.#timer = setTimeout(() => {
+			this.#timer = null;
+			void this.checkNow();
+		}, delay);
+		this.#timer.unref();
+	}
 
-  #cancelTimer(): void {
-    if (this.#timer) {
-      clearTimeout(this.#timer);
-      this.#timer = null;
-    }
-  }
+	#cancelTimer(): void {
+		if (this.#timer) {
+			clearTimeout(this.#timer);
+			this.#timer = null;
+		}
+	}
 }

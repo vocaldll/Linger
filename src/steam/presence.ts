@@ -5,107 +5,123 @@ import { validatePresence } from "../domain/account.js";
 export const RECENT_ACTIVITY_APP_IDS = [635240, 635241, 635242] as const;
 
 export type PresencePlan = {
-  baseGames: Array<number | string>;
-  games: Array<number | string>;
-  clearRecentActivity: boolean;
+	baseGames: Array<number | string>;
+	games: Array<number | string>;
+	clearRecentActivity: boolean;
 };
 
 export type PresenceIntent =
-  | { mode: "boost"; configuration: AccountConfiguration }
-  | { mode: "farm"; appId: number | null; visible: boolean };
+	| { mode: "boost"; configuration: AccountConfiguration }
+	| { mode: "farm"; appId: number | null; visible: boolean };
 
-export function buildGamesPlayed(configuration: AccountConfiguration): Array<number | string> {
-  validatePresence(configuration);
-  return [
-    ...(configuration.customGame?.trim() ? [configuration.customGame.trim()] : []),
-    ...configuration.appIds
-  ];
+export function buildGamesPlayed(
+	configuration: AccountConfiguration,
+): Array<number | string> {
+	validatePresence(configuration);
+	return [
+		...(configuration.customGame?.trim()
+			? [configuration.customGame.trim()]
+			: []),
+		...configuration.appIds,
+	];
 }
 
-export function buildPresencePlan(configuration: AccountConfiguration): PresencePlan {
-  const baseGames = buildGamesPlayed(configuration);
-  return {
-    baseGames,
-    games: configuration.clearRecentActivity
-      ? [...baseGames, ...RECENT_ACTIVITY_APP_IDS]
-      : baseGames,
-    clearRecentActivity: configuration.clearRecentActivity
-  };
+export function buildPresencePlan(
+	configuration: AccountConfiguration,
+): PresencePlan {
+	const baseGames = buildGamesPlayed(configuration);
+	return {
+		baseGames,
+		games: configuration.clearRecentActivity
+			? [...baseGames, ...RECENT_ACTIVITY_APP_IDS]
+			: baseGames,
+		clearRecentActivity: configuration.clearRecentActivity,
+	};
 }
 
 export class PresenceController {
-  #revision = 0;
-  #disposed = false;
-  #licenseRequest: Promise<unknown> | null = null;
+	#revision = 0;
+	#disposed = false;
+	#licenseRequest: Promise<unknown> | null = null;
 
-  constructor(
-    private readonly client: SteamUser,
-    private readonly transitionDelayMs = 3_000,
-    private readonly onLicenseError: (error: unknown) => void = () => {}
-  ) {}
+	constructor(
+		private readonly client: SteamUser,
+		private readonly transitionDelayMs = 3_000,
+		private readonly onLicenseError: (error: unknown) => void = () => {},
+	) {}
 
-  async apply(intent: PresenceIntent): Promise<boolean> {
-    if (this.#disposed) {
-      return false;
-    }
-    const revision = ++this.#revision;
-    if (intent.mode === "farm") {
-      this.client.setPersona(
-        intent.visible ? SteamUser.EPersonaState.Online : SteamUser.EPersonaState.Invisible
-      );
-      this.client.gamesPlayed(intent.appId === null ? [] : [intent.appId]);
-      return true;
-    }
+	async apply(intent: PresenceIntent): Promise<boolean> {
+		if (this.#disposed) {
+			return false;
+		}
+		const revision = ++this.#revision;
+		if (intent.mode === "farm") {
+			this.client.setPersona(
+				intent.visible
+					? SteamUser.EPersonaState.Online
+					: SteamUser.EPersonaState.Invisible,
+			);
+			this.client.gamesPlayed(intent.appId === null ? [] : [intent.appId]);
+			return true;
+		}
 
-    const { configuration } = intent;
-    const plan = buildPresencePlan(configuration);
-    if (!plan.clearRecentActivity) {
-      this.client.setPersona(
-        configuration.visible ? SteamUser.EPersonaState.Online : SteamUser.EPersonaState.Invisible
-      );
-      this.client.gamesPlayed(plan.games);
-      return true;
-    }
+		const { configuration } = intent;
+		const plan = buildPresencePlan(configuration);
+		if (!plan.clearRecentActivity) {
+			this.client.setPersona(
+				configuration.visible
+					? SteamUser.EPersonaState.Online
+					: SteamUser.EPersonaState.Invisible,
+			);
+			this.client.gamesPlayed(plan.games);
+			return true;
+		}
 
-    // Start the configured games first, then add the helper apps and leave them running. This
-    // keeps the helpers as Steam's newest activity while the configured games continue boosting.
-    this.client.setPersona(SteamUser.EPersonaState.Invisible);
-    this.client.gamesPlayed(plan.baseGames);
-    await Promise.all([
-      this.#requestRecentActivityLicenses().catch((error) => {
-        if (!this.#disposed && revision === this.#revision) {
-          this.onLicenseError(error);
-        }
-      }),
-      this.#delay()
-    ]);
-    if (this.#disposed || revision !== this.#revision) {
-      return false;
-    }
+		// Start the configured games first, then add the helper apps and leave them running. This
+		// keeps the helpers as Steam's newest activity while the configured games continue boosting.
+		this.client.setPersona(SteamUser.EPersonaState.Invisible);
+		this.client.gamesPlayed(plan.baseGames);
+		await Promise.all([
+			this.#requestRecentActivityLicenses().catch((error) => {
+				if (!this.#disposed && revision === this.#revision) {
+					this.onLicenseError(error);
+				}
+			}),
+			this.#delay(),
+		]);
+		if (this.#disposed || revision !== this.#revision) {
+			return false;
+		}
 
-    this.client.gamesPlayed(plan.games);
-    this.client.setPersona(
-      configuration.visible ? SteamUser.EPersonaState.Online : SteamUser.EPersonaState.Invisible
-    );
-    return true;
-  }
+		this.client.gamesPlayed(plan.games);
+		this.client.setPersona(
+			configuration.visible
+				? SteamUser.EPersonaState.Online
+				: SteamUser.EPersonaState.Invisible,
+		);
+		return true;
+	}
 
-  dispose(): void {
-    this.#disposed = true;
-    this.#revision += 1;
-  }
+	dispose(): void {
+		this.#disposed = true;
+		this.#revision += 1;
+	}
 
-  #requestRecentActivityLicenses(): Promise<unknown> {
-    if (!this.#licenseRequest) {
-      this.#licenseRequest = this.client.requestFreeLicense([...RECENT_ACTIVITY_APP_IDS]).catch((error) => {
-        this.#licenseRequest = null;
-        throw error;
-      });
-    }
-    return this.#licenseRequest;
-  }
+	#requestRecentActivityLicenses(): Promise<unknown> {
+		if (!this.#licenseRequest) {
+			this.#licenseRequest = this.client
+				.requestFreeLicense([...RECENT_ACTIVITY_APP_IDS])
+				.catch((error) => {
+					this.#licenseRequest = null;
+					throw error;
+				});
+		}
+		return this.#licenseRequest;
+	}
 
-  #delay(): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, this.transitionDelayMs));
-  }
+	#delay(): Promise<void> {
+		return new Promise((resolve) =>
+			setTimeout(resolve, this.transitionDelayMs),
+		);
+	}
 }

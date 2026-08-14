@@ -12,175 +12,201 @@ const temporaryDirectories: string[] = [];
 const controllers: CardFarmingController[] = [];
 
 afterEach(() => {
-  for (const controller of controllers.splice(0)) {
-    controller.dispose();
-  }
-  for (const directory of temporaryDirectories.splice(0)) {
-    rmSync(directory, { recursive: true, force: true });
-  }
+	for (const controller of controllers.splice(0)) {
+		controller.dispose();
+	}
+	for (const directory of temporaryDirectories.splice(0)) {
+		rmSync(directory, { recursive: true, force: true });
+	}
 });
 
 function createStore(): AccountStore {
-  const directory = mkdtempSync(path.join(tmpdir(), "linger-farming-test-"));
-  temporaryDirectories.push(directory);
-  return new AccountStore(path.join(directory, "linger.sqlite"));
+	const directory = mkdtempSync(path.join(tmpdir(), "linger-farming-test-"));
+	temporaryDirectories.push(directory);
+	return new AccountStore(path.join(directory, "linger.sqlite"));
 }
 
 function createAccount(store: AccountStore, appIds: number[]): Account {
-  return store.create({
-    accountName: "farmer",
-    steamId: "76561198000000000",
-    refreshTokenEncrypted: "encrypted",
-    machineAuthTokenEncrypted: null,
-    appIds,
-    customGame: null,
-    visible: false,
-    clearRecentActivity: false,
-    cardFarmingEnabled: true,
-    enabled: true
-  });
+	return store.create({
+		accountName: "farmer",
+		steamId: "76561198000000000",
+		refreshTokenEncrypted: "encrypted",
+		machineAuthTokenEncrypted: null,
+		appIds,
+		customGame: null,
+		visible: false,
+		clearRecentActivity: false,
+		cardFarmingEnabled: true,
+		enabled: true,
+	});
 }
 
 class FakeCommunity implements CardCommunity {
-  readonly remaining = new Map<number, number>();
-  discoveryCalls = 0;
-  remainingCalls = 0;
+	readonly remaining = new Map<number, number>();
+	discoveryCalls = 0;
+	remainingCalls = 0;
 
-  constructor(readonly discovered: CardFarmingEntry[]) {}
+	constructor(readonly discovered: CardFarmingEntry[]) {}
 
-  async discoverFarmableGames(): Promise<CardFarmingEntry[]> {
-    this.discoveryCalls += 1;
-    return this.discovered;
-  }
+	async discoverFarmableGames(): Promise<CardFarmingEntry[]> {
+		this.discoveryCalls += 1;
+		return this.discovered;
+	}
 
-  async getRemainingDrops(_cookies: readonly string[], appId: number): Promise<number> {
-    this.remainingCalls += 1;
-    return this.remaining.get(appId) ?? 0;
-  }
+	async getRemainingDrops(
+		_cookies: readonly string[],
+		appId: number,
+	): Promise<number> {
+		this.remainingCalls += 1;
+		return this.remaining.get(appId) ?? 0;
+	}
 }
 
 function createController(
-  store: AccountStore,
-  account: Account,
-  community: CardCommunity,
-  applied: Account[]
+	store: AccountStore,
+	account: Account,
+	community: CardCommunity,
+	applied: Account[],
 ): CardFarmingController {
-  const controller = new CardFarmingController(
-    store,
-    account,
-    {
-      accountChanged() {},
-      applyPresence(updated) {
-        applied.push(updated);
-      },
-      refreshWebSession() {}
-    },
-    community
-  );
-  controllers.push(controller);
-  controller.setWebSession(["session=secret"]);
-  return controller;
+	const controller = new CardFarmingController(
+		store,
+		account,
+		{
+			accountChanged() {},
+			applyPresence(updated) {
+				applied.push(updated);
+			},
+			refreshWebSession() {},
+		},
+		community,
+	);
+	controllers.push(controller);
+	controller.setWebSession(["session=secret"]);
+	return controller;
 }
 
 describe("card farming controller", () => {
-  it("farms a persisted queue and restores hour boosting when it is exhausted", async () => {
-    const store = createStore();
-    const account = createAccount(store, [730]);
-    const community = new FakeCommunity([
-      { appId: 440, remainingDrops: 2 },
-      { appId: 570, remainingDrops: 1 }
-    ]);
-    const applied: Account[] = [];
-    const controller = createController(store, account, community, applied);
+	it("farms a persisted queue and restores hour boosting when it is exhausted", async () => {
+		const store = createStore();
+		const account = createAccount(store, [730]);
+		const community = new FakeCommunity([
+			{ appId: 440, remainingDrops: 2 },
+			{ appId: 570, remainingDrops: 1 },
+		]);
+		const applied: Account[] = [];
+		const controller = createController(store, account, community, applied);
 
-    await controller.checkNow();
-    assert.deepEqual(store.get(account.id)?.cardFarmingQueue, community.discovered);
-    controller.reconcile(store.get(account.id)!);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.equal(community.remainingCalls, 0);
+		await controller.checkNow();
+		assert.deepEqual(
+			store.get(account.id)?.cardFarmingQueue,
+			community.discovered,
+		);
+		const persisted = store.get(account.id);
+		assert.ok(persisted);
+		controller.reconcile(persisted);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(community.remainingCalls, 0);
 
-    community.remaining.set(440, 0);
-    await controller.checkNow();
-    assert.equal(store.get(account.id)?.cardFarmingQueue[0]?.appId, 570);
+		community.remaining.set(440, 0);
+		await controller.checkNow();
+		assert.equal(store.get(account.id)?.cardFarmingQueue[0]?.appId, 570);
 
-    community.remaining.set(570, 0);
-    await controller.checkNow();
-    const finished = store.get(account.id)!;
-    assert.equal(finished.cardFarmingEnabled, false);
-    assert.equal(finished.enabled, true);
-    assert.deepEqual(finished.cardFarmingQueue, []);
-    assert.equal(applied.at(-1)?.cardFarmingEnabled, false);
-    store.close();
-  });
+		community.remaining.set(570, 0);
+		await controller.checkNow();
+		const finished = store.get(account.id);
+		assert.ok(finished);
+		assert.equal(finished.cardFarmingEnabled, false);
+		assert.equal(finished.enabled, true);
+		assert.deepEqual(finished.cardFarmingQueue, []);
+		assert.equal(applied.at(-1)?.cardFarmingEnabled, false);
+		store.close();
+	});
 
-  it("disables an account with no fallback presence when nothing is farmable", async () => {
-    const store = createStore();
-    const account = createAccount(store, []);
-    const controller = createController(store, account, new FakeCommunity([]), []);
+	it("disables an account with no fallback presence when nothing is farmable", async () => {
+		const store = createStore();
+		const account = createAccount(store, []);
+		const controller = createController(
+			store,
+			account,
+			new FakeCommunity([]),
+			[],
+		);
 
-    await controller.checkNow();
-    const finished = store.get(account.id)!;
-    assert.equal(finished.cardFarmingEnabled, false);
-    assert.equal(finished.enabled, false);
-    assert.equal(finished.status, "disabled");
-    store.close();
-  });
+		await controller.checkNow();
+		const finished = store.get(account.id);
+		assert.ok(finished);
+		assert.equal(finished.cardFarmingEnabled, false);
+		assert.equal(finished.enabled, false);
+		assert.equal(finished.status, "disabled");
+		store.close();
+	});
 
-  it("announces a persisted farming queue once and reports when it stops", () => {
-    const store = createStore();
-    const account = createAccount(store, [730]);
-    const queued = store.replaceCardFarmingQueue(account.id, [{ appId: 440, remainingDrops: 2 }]);
-    const output: string[] = [];
-    const originalWrite = process.stdout.write;
-    const originalLogLevel = process.env.LINGER_LOG_LEVEL;
-    let controller: CardFarmingController | null = null;
-    process.env.LINGER_LOG_LEVEL = "info";
-    process.stdout.write = ((chunk: string | Uint8Array) => {
-      output.push(chunk.toString());
-      return true;
-    }) as typeof process.stdout.write;
+	it("announces a persisted farming queue once and reports when it stops", () => {
+		const store = createStore();
+		const account = createAccount(store, [730]);
+		const queued = store.replaceCardFarmingQueue(account.id, [
+			{ appId: 440, remainingDrops: 2 },
+		]);
+		const output: string[] = [];
+		const originalWrite = process.stdout.write;
+		const originalLogLevel = process.env.LINGER_LOG_LEVEL;
+		let controller: CardFarmingController | null = null;
+		process.env.LINGER_LOG_LEVEL = "info";
+		process.stdout.write = ((chunk: string | Uint8Array) => {
+			output.push(chunk.toString());
+			return true;
+		}) as typeof process.stdout.write;
 
-    try {
-      controller = createController(store, queued, new FakeCommunity([]), []);
-      controller.setWebSession(["session=renewed"]);
-      assert.equal(output.filter((line) => line.includes("cards    Farming resumed")).length, 1);
-      assert.match(output.join(""), /app=440 drops=2 queued=1/u);
+		try {
+			controller = createController(store, queued, new FakeCommunity([]), []);
+			controller.setWebSession(["session=renewed"]);
+			assert.equal(
+				output.filter((line) => line.includes("cards    Farming resumed"))
+					.length,
+				1,
+			);
+			assert.match(output.join(""), /app=440 drops=2 queued=1/u);
 
-      const stopped = store.setCardFarmingEnabled(account.id, false);
-      controller.reconcile(stopped);
-      controller.reconcile(stopped);
-      assert.equal(output.filter((line) => line.includes("cards    Farming stopped")).length, 1);
-      assert.match(output.join(""), /Farming stopped \| next=hour-boosting/u);
-    } finally {
-      process.stdout.write = originalWrite;
-      if (originalLogLevel === undefined) {
-        delete process.env.LINGER_LOG_LEVEL;
-      } else {
-        process.env.LINGER_LOG_LEVEL = originalLogLevel;
-      }
-      controller?.dispose();
-      store.close();
-    }
-  });
+			const stopped = store.setCardFarmingEnabled(account.id, false);
+			controller.reconcile(stopped);
+			controller.reconcile(stopped);
+			assert.equal(
+				output.filter((line) => line.includes("cards    Farming stopped"))
+					.length,
+				1,
+			);
+			assert.match(output.join(""), /Farming stopped \| next=hour-boosting/u);
+		} finally {
+			process.stdout.write = originalWrite;
+			if (originalLogLevel === undefined) {
+				delete process.env.LINGER_LOG_LEVEL;
+			} else {
+				process.env.LINGER_LOG_LEVEL = originalLogLevel;
+			}
+			controller?.dispose();
+			store.close();
+		}
+	});
 
-  it("keeps farming enabled when discovery fails", async () => {
-    const store = createStore();
-    const account = createAccount(store, []);
-    const failingCommunity: CardCommunity = {
-      async discoverFarmableGames() {
-        throw new Error("unrecognized badges page");
-      },
-      async getRemainingDrops() {
-        throw new Error("not reached");
-      }
-    };
-    const controller = createController(store, account, failingCommunity, []);
+	it("keeps farming enabled when discovery fails", async () => {
+		const store = createStore();
+		const account = createAccount(store, []);
+		const failingCommunity: CardCommunity = {
+			async discoverFarmableGames() {
+				throw new Error("unrecognized badges page");
+			},
+			async getRemainingDrops() {
+				throw new Error("not reached");
+			},
+		};
+		const controller = createController(store, account, failingCommunity, []);
 
-    await controller.checkNow();
-    const unchanged = store.get(account.id)!;
-    assert.equal(unchanged.cardFarmingEnabled, true);
-    assert.equal(unchanged.enabled, true);
-    assert.deepEqual(unchanged.cardFarmingQueue, []);
-    store.close();
-  });
+		await controller.checkNow();
+		const unchanged = store.get(account.id);
+		assert.ok(unchanged);
+		assert.equal(unchanged.cardFarmingEnabled, true);
+		assert.equal(unchanged.enabled, true);
+		assert.deepEqual(unchanged.cardFarmingQueue, []);
+		store.close();
+	});
 });
