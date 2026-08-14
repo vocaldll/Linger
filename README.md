@@ -96,3 +96,7 @@ Steam does not expose remaining card drops through its documented API, so this f
 pnpm check
 pnpm test
 ```
+
+---
+
+<sub>Not affiliated with Valve Corporation or Steam. All trademarks belong to their respective owners. Released under the [MIT License](LICENSE).</sub>
