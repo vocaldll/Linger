@@ -1,12 +1,13 @@
 # Linger
 
-Linger is a terminal-based, multi-account Steam hour booster. It keeps configured games active through Steam, reconnects accounts when needed, and stores account configuration in a local SQLite database.
+Linger is a terminal-based, multi-account Steam hour booster and card farmer. It keeps configured games active through Steam, automatically farms available trading-card drops, reconnects accounts when needed, and stores account configuration in a local SQLite database.
 
 ## Features
 
 - Manage multiple Steam accounts from an interactive TUI
 - Sign in using a Steam Mobile QR code or username, password, and Steam Guard
 - Pick games from the account's Steam library, with search and playtime sorting
+- Automatically farm every currently available Steam trading-card drop, one game at a time
 - Add AppIDs manually when a game is unavailable in the library picker
 - Configure visibility, a custom game title, and recent-activity clearing per account
 - Encrypt saved Steam tokens with a local master key
@@ -84,6 +85,10 @@ Keep the data directory or configured master key backed up. Saved account tokens
 ## Notes
 
 Steam supports at most 32 simultaneous game entries. A custom game title uses one slot, and recent-activity clearing reserves three additional slots. If Steam cannot return an account's library, games can still be configured using AppIDs.
+
+Card farming temporarily replaces the configured hour-boosting presence. Linger scans the authenticated Steam Community badge pages, persists the farming queue, and checks the active game when Steam announces new inventory items or after a periodic fallback interval. Once the queue is complete, card farming turns itself off and normal hour boosting resumes. If no normal AppIDs or custom game are configured, the account is disabled instead.
+
+Steam does not expose remaining card drops through its documented API, so this feature depends on the badge and game-card page markup. Unexpected, incomplete, rate-limited, or logged-out responses are treated as errors and retried; they are never interpreted as an empty queue or zero remaining drops.
 
 ## Development
 

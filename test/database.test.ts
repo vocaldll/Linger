@@ -32,6 +32,7 @@ describe("AccountStore", () => {
       customGame: null,
       visible: true,
       clearRecentActivity: false,
+      cardFarmingEnabled: false,
       enabled: true
     });
 
@@ -61,6 +62,7 @@ describe("AccountStore", () => {
       customGame: null,
       visible: true,
       clearRecentActivity: false,
+      cardFarmingEnabled: false,
       enabled: true
     });
     const updated = store.updateRuntime(account.id, { status: "online", lastError: null });
@@ -80,6 +82,7 @@ describe("AccountStore", () => {
       customGame: null,
       visible: true,
       clearRecentActivity: false,
+      cardFarmingEnabled: false,
       enabled: true
     });
 
@@ -154,6 +157,36 @@ describe("AccountStore", () => {
 
     const store = new AccountStore(databasePath);
     assert.equal(store.get("id")?.clearRecentActivity, false);
+    assert.equal(store.get("id")?.cardFarmingEnabled, false);
+    assert.deepEqual(store.get("id")?.cardFarmingQueue, []);
+    store.close();
+  });
+
+  it("persists card queues and disables farming after completion", () => {
+    const store = createStore();
+    const account = store.create({
+      accountName: "cards-only",
+      steamId: null,
+      refreshTokenEncrypted: "encrypted",
+      machineAuthTokenEncrypted: null,
+      appIds: [],
+      customGame: null,
+      visible: false,
+      clearRecentActivity: false,
+      cardFarmingEnabled: true,
+      enabled: true
+    });
+
+    const queued = store.replaceCardFarmingQueue(account.id, [
+      { appId: 440, remainingDrops: 2 }
+    ]);
+    assert.deepEqual(queued.cardFarmingQueue, [{ appId: 440, remainingDrops: 2 }]);
+
+    const finished = store.finishCardFarming(account.id);
+    assert.equal(finished.cardFarmingEnabled, false);
+    assert.deepEqual(finished.cardFarmingQueue, []);
+    assert.equal(finished.enabled, false);
+    assert.equal(finished.status, "disabled");
     store.close();
   });
 });

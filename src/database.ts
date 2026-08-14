@@ -6,10 +6,15 @@ import type {
   Account,
   AccountConfiguration,
   AccountStatus,
+  CardFarmingEntry,
   NewAccount,
   RuntimePatch
 } from "./domain/account.js";
-import { validatePresence } from "./domain/account.js";
+import {
+  hasNormalPresence,
+  validateAccountSetup,
+  validateCardFarmingQueue
+} from "./domain/account.js";
 import type { OwnedGame } from "./domain/game-library.js";
 
 type AccountRow = {
@@ -22,6 +27,8 @@ type AccountRow = {
   custom_game: string | null;
   visible: number;
   clear_recent_activity: number;
+  card_farming_enabled: number;
+  card_farming_queue_json: string;
   enabled: number;
   revision: number;
   restart_nonce: number;
@@ -40,7 +47,8 @@ type OwnedGameRow = {
 
 const ACCOUNT_COLUMNS = `
   id, account_name, steam_id, refresh_token_encrypted, machine_auth_token_encrypted,
-  app_ids_json, custom_game, visible, clear_recent_activity, enabled, revision, restart_nonce, status,
+  app_ids_json, custom_game, visible, clear_recent_activity, card_farming_enabled,
+  card_farming_queue_json, enabled, revision, restart_nonce, status,
   last_error, last_connected_at, created_at, updated_at
 `;
 
@@ -50,6 +58,16 @@ function parseAppIdsJson(value: string): number[] {
     throw new Error("Stored account has invalid AppIDs");
   }
   return parsed as number[];
+}
+
+function parseCardFarmingQueueJson(value: string): CardFarmingEntry[] {
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed)) {
+    throw new Error("Stored account has an invalid card-farming queue");
+  }
+  const queue = parsed as CardFarmingEntry[];
+  validateCardFarmingQueue(queue);
+  return queue;
 }
 
 function mapAccount(row: AccountRow): Account {
@@ -63,6 +81,8 @@ function mapAccount(row: AccountRow): Account {
     customGame: row.custom_game,
     visible: row.visible === 1,
     clearRecentActivity: row.clear_recent_activity === 1,
+    cardFarmingEnabled: row.card_farming_enabled === 1,
+    cardFarmingQueue: parseCardFarmingQueueJson(row.card_farming_queue_json),
     enabled: row.enabled === 1,
     revision: row.revision,
     restartNonce: row.restart_nonce,
@@ -110,16 +130,17 @@ export class AccountStore {
   }
 
   create(input: NewAccount): Account {
-    validatePresence(input);
+    validateAccountSetup(input);
     const id = randomUUID();
     const now = new Date().toISOString();
     this.#db
       .prepare(`
         INSERT INTO accounts (
           id, account_name, steam_id, refresh_token_encrypted, machine_auth_token_encrypted,
-          app_ids_json, custom_game, visible, clear_recent_activity, enabled, revision, restart_nonce, status,
+          app_ids_json, custom_game, visible, clear_recent_activity, card_farming_enabled,
+          card_farming_queue_json, enabled, revision, restart_nonce, status,
           last_error, last_connected_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, NULL, NULL, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, 1, 0, ?, NULL, NULL, ?, ?)
       `)
       .run(
         id,
@@ -131,6 +152,7 @@ export class AccountStore {
         input.customGame?.trim() || null,
         input.visible ? 1 : 0,
         input.clearRecentActivity ? 1 : 0,
+        input.cardFarmingEnabled ? 1 : 0,
         input.enabled ? 1 : 0,
         input.enabled ? "idle" : "disabled",
         now,
@@ -140,7 +162,8 @@ export class AccountStore {
   }
 
   updateConfiguration(id: string, configuration: AccountConfiguration): Account {
-    validatePresence(configuration);
+    const current = this.#require(id);
+    validateAccountSetup({ ...configuration, cardFarmingEnabled: current.cardFarmingEnabled });
     const result = this.#db
       .prepare(`
         UPDATE accounts
@@ -161,6 +184,10 @@ export class AccountStore {
   }
 
   setEnabled(id: string, enabled: boolean): Account {
+    const account = this.#require(id);
+    if (enabled) {
+      validateAccountSetup(account);
+    }
     const result = this.#db
       .prepare(`
         UPDATE accounts
@@ -170,6 +197,41 @@ export class AccountStore {
       .run(enabled ? 1 : 0, enabled ? "idle" : "disabled", new Date().toISOString(), id);
     this.#assertChanged(result.changes, id);
     return this.#require(id);
+  }
+
+  setCardFarmingEnabled(id: string, enabled: boolean): Account {
+    const account = this.#require(id);
+    const keepEnabled = enabled || (account.enabled && hasNormalPresence(account));
+    const result = this.#db
+      .prepare(`
+        UPDATE accounts
+        SET card_farming_enabled = ?, card_farming_queue_json = '[]',
+            enabled = ?, status = ?, last_error = NULL,
+            revision = revision + 1, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        enabled ? 1 : 0,
+        keepEnabled ? 1 : 0,
+        keepEnabled ? (account.enabled && account.status === "online" ? "online" : "idle") : "disabled",
+        new Date().toISOString(),
+        id
+      );
+    this.#assertChanged(result.changes, id);
+    return this.#require(id);
+  }
+
+  replaceCardFarmingQueue(id: string, queue: readonly CardFarmingEntry[]): Account {
+    validateCardFarmingQueue(queue);
+    const result = this.#db
+      .prepare("UPDATE accounts SET card_farming_queue_json = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(queue), new Date().toISOString(), id);
+    this.#assertChanged(result.changes, id);
+    return this.#require(id);
+  }
+
+  finishCardFarming(id: string): Account {
+    return this.setCardFarmingEnabled(id, false);
   }
 
   requestRestart(id: string): Account {
@@ -332,7 +394,7 @@ export class AccountStore {
   #migrate(): void {
     const versionRow = this.#db.prepare("PRAGMA user_version").get() as { user_version: number };
     const version = versionRow.user_version;
-    if (version > 4) {
+    if (version > 5) {
       throw new Error(`Database schema ${version} is newer than this version of Linger supports`);
     }
     if (version === 0) {
@@ -395,6 +457,15 @@ export class AccountStore {
           PRIMARY KEY (account_id, app_id)
         );
         PRAGMA user_version = 4;
+      `);
+    }
+
+    if (version <= 4) {
+      this.#db.exec(`
+        ALTER TABLE accounts ADD COLUMN card_farming_enabled INTEGER NOT NULL DEFAULT 0
+          CHECK (card_farming_enabled IN (0, 1));
+        ALTER TABLE accounts ADD COLUMN card_farming_queue_json TEXT NOT NULL DEFAULT '[]';
+        PRAGMA user_version = 5;
       `);
     }
   }

@@ -3,6 +3,7 @@ import { CredentialVault } from "../crypto.js";
 import { AccountStore } from "../database.js";
 import type { Account } from "../domain/account.js";
 import { logger } from "../logger.js";
+import { CardFarmingController } from "./card-farming.js";
 import { getOwnedGames } from "./game-library.js";
 import { PresenceController } from "./presence.js";
 
@@ -44,6 +45,8 @@ function presenceChanged(previous: Account, next: Account): boolean {
   return (
     previous.visible !== next.visible ||
     previous.clearRecentActivity !== next.clearRecentActivity ||
+    previous.cardFarmingEnabled !== next.cardFarmingEnabled ||
+    previous.cardFarmingQueue[0]?.appId !== next.cardFarmingQueue[0]?.appId ||
     previous.customGame !== next.customGame ||
     JSON.stringify(previous.appIds) !== JSON.stringify(next.appIds)
   );
@@ -53,6 +56,7 @@ export class AccountWorker {
   #record: Account;
   #client: SteamUser | null = null;
   #presence: PresenceController | null = null;
+  #cardFarming: CardFarmingController | null = null;
   #connecting = false;
   #stopped = false;
   #generation = 0;
@@ -85,6 +89,7 @@ export class AccountWorker {
       previous.machineAuthTokenEncrypted !== next.machineAuthTokenEncrypted;
     const restartRequested = previous.restartNonce !== next.restartNonce;
     this.#record = next;
+    this.#cardFarming?.reconcile(next);
 
     if (!next.enabled) {
       this.#disconnect();
@@ -163,6 +168,33 @@ export class AccountWorker {
           error: error instanceof Error ? error.message : String(error)
         });
       });
+      this.#cardFarming?.dispose();
+      this.#cardFarming = new CardFarmingController(this.store, this.#record, {
+        accountChanged: (updated) => {
+          if (this.#isCurrent(generation, client)) {
+            this.#record = updated;
+          }
+        },
+        applyPresence: (updated) => {
+          if (this.#isCurrent(generation, client)) {
+            this.#record = updated;
+            this.#applyPresence();
+          }
+        },
+        refreshWebSession: () => {
+          if (!this.#isCurrent(generation, client)) {
+            return;
+          }
+          try {
+            client.webLogOn();
+          } catch (error) {
+            logger.warn("Could not refresh Steam Community session", {
+              account: this.#record.accountName,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
+      });
       this.#applyPresence();
       void this.#syncLibrary(generation, client, account.id);
       const latest = this.store.get(account.id);
@@ -199,6 +231,17 @@ export class AccountWorker {
       });
     });
 
+    client.on("webSession", (_sessionId, cookies) => {
+      if (this.#isCurrent(generation, client)) {
+        this.#cardFarming?.setWebSession(cookies);
+      }
+    });
+    client.on("newItems", () => {
+      if (this.#isCurrent(generation, client)) {
+        this.#cardFarming?.notifyNewItems();
+      }
+    });
+
     client.on("steamGuard", () => {
       if (this.#isCurrent(generation, client)) {
         this.#fail(new Error("Stored login requires interactive authentication"), true);
@@ -232,14 +275,22 @@ export class AccountWorker {
       return;
     }
     const snapshot = this.#record;
-    void presence.apply(snapshot).then(
+    const intent = !snapshot.enabled || snapshot.cardFarmingEnabled
+      ? {
+          mode: "farm" as const,
+          appId: snapshot.enabled ? (snapshot.cardFarmingQueue[0]?.appId ?? null) : null,
+          visible: snapshot.visible
+        }
+      : { mode: "boost" as const, configuration: snapshot };
+    void presence.apply(intent).then(
       (applied) => {
         if (!applied || presence !== this.#presence) {
           return;
         }
         logger.info("Steam presence applied", {
           account: snapshot.accountName,
-          games: snapshot.appIds.length,
+          mode: snapshot.cardFarmingEnabled ? "card-farming" : "hour-boosting",
+          games: snapshot.cardFarmingEnabled ? (snapshot.cardFarmingQueue[0] ? 1 : 0) : snapshot.appIds.length,
           customGame: snapshot.customGame,
           visible: snapshot.visible,
           clearRecentActivity: snapshot.clearRecentActivity
@@ -318,6 +369,8 @@ export class AccountWorker {
     this.#client = null;
     this.#presence?.dispose();
     this.#presence = null;
+    this.#cardFarming?.dispose();
+    this.#cardFarming = null;
     this.#connecting = false;
     if (client) {
       client.removeAllListeners();

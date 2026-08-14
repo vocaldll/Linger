@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { MAX_GAMES_PLAYED, parseAppIds, validatePresence } from "../src/domain/account.js";
+import {
+  MAX_GAMES_PLAYED,
+  parseAppIds,
+  validateAccountSetup,
+  validatePresence
+} from "../src/domain/account.js";
 import { filterAccountsForSearch } from "../src/tui.js";
 
 describe("account presence", () => {
@@ -13,6 +18,18 @@ describe("account presence", () => {
     assert.throws(
       () => validatePresence({ appIds: [], customGame: null, visible: true, clearRecentActivity: false }),
       /at least one AppID or a custom game name/iu
+    );
+  });
+
+  it("allows an empty normal presence while card farming is enabled", () => {
+    assert.doesNotThrow(() =>
+      validateAccountSetup({
+        appIds: [],
+        customGame: null,
+        visible: false,
+        clearRecentActivity: false,
+        cardFarmingEnabled: true
+      })
     );
   });
 

@@ -10,6 +10,10 @@ export type PresencePlan = {
   clearRecentActivity: boolean;
 };
 
+export type PresenceIntent =
+  | { mode: "boost"; configuration: AccountConfiguration }
+  | { mode: "farm"; appId: number | null; visible: boolean };
+
 export function buildGamesPlayed(configuration: AccountConfiguration): Array<number | string> {
   validatePresence(configuration);
   return [
@@ -40,11 +44,20 @@ export class PresenceController {
     private readonly onLicenseError: (error: unknown) => void = () => {}
   ) {}
 
-  async apply(configuration: AccountConfiguration): Promise<boolean> {
+  async apply(intent: PresenceIntent): Promise<boolean> {
     if (this.#disposed) {
       return false;
     }
     const revision = ++this.#revision;
+    if (intent.mode === "farm") {
+      this.client.setPersona(
+        intent.visible ? SteamUser.EPersonaState.Online : SteamUser.EPersonaState.Invisible
+      );
+      this.client.gamesPlayed(intent.appId === null ? [] : [intent.appId]);
+      return true;
+    }
+
+    const { configuration } = intent;
     const plan = buildPresencePlan(configuration);
     if (!plan.clearRecentActivity) {
       this.client.setPersona(

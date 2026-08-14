@@ -47,7 +47,7 @@ export function printLingerHeader(): void {
     [
       "",
       `  ${ui.accentStrong("◷  LINGER")}  ${ui.deepAccent("━━━━━━━━━━━━━━━━━━")}`,
-      `     ${ui.muted("Steam hour booster")}`,
+      `     ${ui.muted("Steam hour booster and card farmer")}`,
       ""
     ].join("\n")
   );

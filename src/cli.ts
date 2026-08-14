@@ -11,7 +11,7 @@ const command = process.argv[2];
 function printHelp(): void {
   process.stdout.write(
     [
-      "Linger · multi-account Steam hour booster",
+      "Linger · multi-account Steam hour booster and card farmer",
       "",
       "Usage:",
       "  linger run       Run all enabled accounts",

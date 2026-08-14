@@ -8,13 +8,13 @@ import {
 import qrcode from "qrcode-terminal";
 import { CredentialVault } from "./crypto.js";
 import { AccountStore } from "./database.js";
-import type { Account, AccountConfiguration } from "./domain/account.js";
+import type { Account, AccountConfiguration, AccountSetup } from "./domain/account.js";
 import {
   MAX_CUSTOM_GAME_LENGTH,
   MAX_GAMES_PLAYED,
   RECENT_ACTIVITY_RESERVED_SLOTS,
   parseAppIds,
-  validatePresence
+  validateAccountSetup
 } from "./domain/account.js";
 import {
   GAME_SORT_LABELS,
@@ -151,8 +151,8 @@ async function promptLoginMethod(
 }
 
 type GameSelectionContext = Pick<
-  AccountConfiguration,
-  "customGame" | "clearRecentActivity"
+  AccountSetup,
+  "customGame" | "clearRecentActivity" | "cardFarmingEnabled"
 >;
 
 function maximumSelectableAppIds(context: GameSelectionContext): number {
@@ -182,7 +182,7 @@ async function promptGamePicker(
         selectedAppIds,
         sort,
         maximumSelected,
-        allowEmpty: Boolean(context.customGame),
+        allowEmpty: Boolean(context.customGame) || context.cardFarmingEnabled,
         initialQuery: query,
         initialActiveAppId: activeAppId,
         ...(notice ? { notice } : {})
@@ -222,11 +222,12 @@ async function promptGamePicker(
         try {
           const entered = parseAppIds(candidate);
           const combined = [...new Set([...selectedAppIds, ...entered])];
-          validatePresence({
+          validateAccountSetup({
             appIds: combined,
             customGame: context.customGame,
             visible: true,
-            clearRecentActivity: context.clearRecentActivity
+            clearRecentActivity: context.clearRecentActivity,
+            cardFarmingEnabled: context.cardFarmingEnabled
           });
           return true;
         } catch (error) {
@@ -251,8 +252,13 @@ async function promptGamePicker(
 
 async function promptConfiguration(
   ownedGames: readonly OwnedGame[],
-  current?: AccountConfiguration
-): Promise<AccountConfiguration | null> {
+  current?: AccountSetup
+): Promise<AccountSetup | null> {
+  const cardFarmingEnabled = await confirm({
+    message: "Farm all currently available Steam trading cards before hour boosting?",
+    default: current?.cardFarmingEnabled ?? false,
+    theme: LINGER_THEME
+  });
   const customGameValue = await input({
     message: "Custom game name (optional)",
     default: current?.customGame ?? "",
@@ -271,7 +277,8 @@ async function promptConfiguration(
   });
   const appIds = await promptGamePicker(ownedGames, current?.appIds ?? [], {
     customGame,
-    clearRecentActivity
+    clearRecentActivity,
+    cardFarmingEnabled
   });
   if (appIds === null) {
     return null;
@@ -282,7 +289,7 @@ async function promptConfiguration(
     theme: LINGER_THEME
   });
 
-  return { appIds, customGame, visible, clearRecentActivity };
+  return { appIds, customGame, visible, clearRecentActivity, cardFarmingEnabled };
 }
 
 function currentConfiguration(account: Account): AccountConfiguration {
@@ -312,8 +319,9 @@ async function promptCustomGame(account: Account): Promise<string | null> {
         return `Use ${MAX_CUSTOM_GAME_LENGTH} characters or fewer`;
       }
       try {
-        validatePresence({
+        validateAccountSetup({
           ...currentConfiguration(account),
+          cardFarmingEnabled: account.cardFarmingEnabled,
           customGame: !trimmed ? account.customGame : trimmed === "-" ? null : trimmed
         });
         return true;
@@ -379,6 +387,14 @@ function accountSummary(account: Account): string {
     row("Enabled", account.enabled ? "yes" : "no"),
     row("Visibility", account.visible ? "visible" : "invisible"),
     row("Clear recent activity", account.clearRecentActivity ? "enabled" : "disabled"),
+    row(
+      "Card farming",
+      account.cardFarmingEnabled
+        ? account.cardFarmingQueue[0]
+          ? `AppID ${account.cardFarmingQueue[0].appId} · ${account.cardFarmingQueue[0].remainingDrops} drops · ${account.cardFarmingQueue.length} queued`
+          : "enabled · scanning"
+        : "disabled"
+    ),
     row("Boosted AppIDs", games),
     row("Custom game", account.customGame ?? "none"),
     account.lastConnectedAt ? row("Last connected", account.lastConnectedAt) : null,
@@ -464,6 +480,11 @@ async function reauthenticateAccount(
 async function manageAccount(store: AccountStore, vault: CredentialVault, initial: Account): Promise<void> {
   let account = initial;
   while (true) {
+    const latest = store.get(account.id);
+    if (!latest) {
+      return;
+    }
+    account = latest;
     process.stdout.write(`\n${accountSummary(account)}\n\n`);
     const action = await select({
       message: `Manage ${account.accountName}`,
@@ -485,6 +506,10 @@ async function manageAccount(store: AccountStore, vault: CredentialVault, initia
         {
           name: `Clear recent activity · ${account.clearRecentActivity ? "enabled" : "disabled"}`,
           value: "recentActivity"
+        },
+        {
+          name: `Card farming · ${account.cardFarmingEnabled ? `${account.cardFarmingQueue.length} queued` : "disabled"}`,
+          value: "cardFarming"
         },
         {
           name: account.enabled ? "Disable account" : "Enable account",
@@ -531,6 +556,28 @@ async function manageAccount(store: AccountStore, vault: CredentialVault, initia
           }
           throw error;
         }
+        break;
+      }
+      case "cardFarming": {
+        const change = await confirm({
+          message: account.cardFarmingEnabled
+            ? "Stop card farming and return to normal hour boosting?"
+            : "Farm every game with card drops currently available?",
+          default: !account.cardFarmingEnabled,
+          theme: LINGER_THEME
+        });
+        if (!change) {
+          pauseMessage("No changes saved.");
+          break;
+        }
+        account = store.setCardFarmingEnabled(account.id, !account.cardFarmingEnabled);
+        pauseMessage(
+          account.cardFarmingEnabled
+            ? "Card farming enabled. Linger will scan Steam and begin automatically."
+            : account.enabled
+              ? "Card farming disabled. Normal hour boosting will resume."
+              : "Card farming disabled. The account had no boosted games and was disabled."
+        );
         break;
       }
       case "toggle":

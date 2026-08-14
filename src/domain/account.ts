@@ -21,6 +21,8 @@ export type Account = {
   customGame: string | null;
   visible: boolean;
   clearRecentActivity: boolean;
+  cardFarmingEnabled: boolean;
+  cardFarmingQueue: CardFarmingEntry[];
   enabled: boolean;
   revision: number;
   restartNonce: number;
@@ -31,15 +33,30 @@ export type Account = {
   updatedAt: string;
 };
 
+export type CardFarmingEntry = {
+  appId: number;
+  remainingDrops: number;
+};
+
 export type NewAccount = Omit<
   Account,
-  "id" | "revision" | "restartNonce" | "status" | "lastError" | "lastConnectedAt" | "createdAt" | "updatedAt"
+  | "id"
+  | "cardFarmingQueue"
+  | "revision"
+  | "restartNonce"
+  | "status"
+  | "lastError"
+  | "lastConnectedAt"
+  | "createdAt"
+  | "updatedAt"
 >;
 
 export type AccountConfiguration = Pick<
   Account,
   "appIds" | "customGame" | "visible" | "clearRecentActivity"
 >;
+
+export type AccountSetup = AccountConfiguration & Pick<Account, "cardFarmingEnabled">;
 
 export type RuntimePatch = Partial<
   Pick<Account, "steamId" | "status" | "lastError" | "lastConnectedAt" | "refreshTokenEncrypted" | "machineAuthTokenEncrypted">
@@ -71,6 +88,40 @@ export function parseAppIds(input: string): number[] {
 }
 
 export function validatePresence(configuration: AccountConfiguration): void {
+  validatePresenceSlots(configuration);
+  if (!hasNormalPresence(configuration)) {
+    throw new Error("Configure at least one AppID or a custom game name");
+  }
+}
+
+export function hasNormalPresence(configuration: Pick<Account, "appIds" | "customGame">): boolean {
+  return configuration.appIds.length > 0 || Boolean(configuration.customGame?.trim());
+}
+
+export function validateAccountSetup(configuration: AccountSetup): void {
+  validatePresenceSlots(configuration);
+  if (!configuration.cardFarmingEnabled && !hasNormalPresence(configuration)) {
+    throw new Error("Configure at least one AppID, a custom game name, or card farming");
+  }
+}
+
+export function validateCardFarmingQueue(queue: readonly CardFarmingEntry[]): void {
+  const seen = new Set<number>();
+  for (const entry of queue) {
+    if (!Number.isSafeInteger(entry.appId) || entry.appId <= 0 || entry.appId > 0xffff_ffff) {
+      throw new Error(`Invalid card-farming AppID: ${entry.appId}`);
+    }
+    if (!Number.isSafeInteger(entry.remainingDrops) || entry.remainingDrops <= 0) {
+      throw new Error(`Invalid remaining card drops for AppID ${entry.appId}`);
+    }
+    if (seen.has(entry.appId)) {
+      throw new Error(`Duplicate card-farming AppID: ${entry.appId}`);
+    }
+    seen.add(entry.appId);
+  }
+}
+
+function validatePresenceSlots(configuration: AccountConfiguration): void {
   const customGame = configuration.customGame?.trim() || null;
   if (customGame && customGame.length > MAX_CUSTOM_GAME_LENGTH) {
     throw new Error(`Custom game name must be ${MAX_CUSTOM_GAME_LENGTH} characters or fewer`);
@@ -79,9 +130,6 @@ export function validatePresence(configuration: AccountConfiguration): void {
   const availableSlots = configuration.clearRecentActivity
     ? MAX_GAMES_PLAYED - RECENT_ACTIVITY_RESERVED_SLOTS
     : MAX_GAMES_PLAYED;
-  if (slots === 0) {
-    throw new Error("Configure at least one AppID or a custom game name");
-  }
   if (slots > availableSlots) {
     throw new Error(
       configuration.clearRecentActivity

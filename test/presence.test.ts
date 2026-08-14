@@ -9,6 +9,20 @@ import {
 } from "../src/steam/presence.js";
 
 describe("Steam presence", () => {
+  it("farms one game without normal boosting or recent-activity helpers", async () => {
+    const played: Array<Array<number | string>> = [];
+    const client = {
+      setPersona() {},
+      gamesPlayed(games: Array<number | string>) {
+        played.push([...games]);
+      }
+    } as unknown as SteamUser;
+    const presence = new PresenceController(client, 0);
+
+    await presence.apply({ mode: "farm", appId: 440, visible: false });
+    assert.deepEqual(played, [[440]]);
+  });
+
   it("places the custom game alongside configured AppIDs", () => {
     assert.deepEqual(
       buildGamesPlayed({
@@ -52,10 +66,13 @@ describe("Steam presence", () => {
     });
 
     const applied = await presence.apply({
-      appIds: [730],
-      customGame: null,
-      visible: true,
-      clearRecentActivity: true
+      mode: "boost",
+      configuration: {
+        appIds: [730],
+        customGame: null,
+        visible: true,
+        clearRecentActivity: true
+      }
     });
 
     assert.deepEqual(played, [
@@ -84,10 +101,13 @@ describe("Steam presence", () => {
     });
 
     const applying = presence.apply({
-      appIds: [730],
-      customGame: null,
-      visible: true,
-      clearRecentActivity: true
+      mode: "boost",
+      configuration: {
+        appIds: [730],
+        customGame: null,
+        visible: true,
+        clearRecentActivity: true
+      }
     });
     presence.dispose();
     rejectLicense(new Error("request completed after disconnect"));
