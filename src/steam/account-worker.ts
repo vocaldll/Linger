@@ -531,7 +531,7 @@ export class AccountWorker {
 				return;
 			}
 			if (assessment.action === "fallback") {
-				this.#scheduleGameStatusFallback("privacy-or-hidden-activity");
+				this.#scheduleGameStatusFallback("unrecognized-profile-status");
 				return;
 			}
 			this.#gameExitWait = null;

@@ -36,7 +36,6 @@ export interface CardCommunity {
 }
 
 export type CurrentGameStatus = "playing" | "not-playing" | "unknown";
-export type GameStatusVisibility = "public" | "hidden" | "unknown";
 
 export interface CommunityGameStatus {
 	getCurrentGameStatus(cookies: readonly string[]): Promise<CurrentGameStatus>;
@@ -175,20 +174,6 @@ export function parseCurrentGameStatus(html: string): CurrentGameStatus {
 	return "unknown";
 }
 
-export function parseGameStatusVisibility(html: string): GameStatusVisibility {
-	const $ = cheerio.load(html);
-	assertAuthenticated($, "");
-	const profile = parsePrivacySetting($, html, "PrivacyProfile");
-	const games = parsePrivacySetting($, html, "PrivacyOwnedGames");
-	if (profile !== null && profile !== 3) {
-		return "hidden";
-	}
-	if (games !== null && games !== 3) {
-		return "hidden";
-	}
-	return profile === 3 && games === 3 ? "public" : "unknown";
-}
-
 export class SteamCommunityCardService
 	implements CardCommunity, CommunityGameStatus
 {
@@ -245,14 +230,6 @@ export class SteamCommunityCardService
 	async getCurrentGameStatus(
 		cookies: readonly string[],
 	): Promise<CurrentGameStatus> {
-		const settings = await this.loadPage(
-			"https://steamcommunity.com/my/edit/settings?l=english",
-			cookies,
-		);
-		assertResponseAuthenticated(settings);
-		if (parseGameStatusVisibility(settings.html) !== "public") {
-			return "unknown";
-		}
 		const response = await this.loadPage(
 			"https://steamcommunity.com/my/?l=english",
 			cookies,
@@ -320,19 +297,6 @@ function assertAuthenticated($: cheerio.CheerioAPI, url: string): void {
 	if (url && /\/login(?:\/|\?|$)/iu.test(url)) {
 		throw new SteamCommunityAuthenticationError();
 	}
-}
-
-function parsePrivacySetting(
-	$: cheerio.CheerioAPI,
-	html: string,
-	name: string,
-): number | null {
-	const controlValue = $(`#${name}, [name="${name}"]`).first().val();
-	if (typeof controlValue === "string" && /^[1-3]$/u.test(controlValue)) {
-		return Number(controlValue);
-	}
-	const match = html.match(new RegExp(`"${name}"\\s*:\\s*([1-3])`, "u"));
-	return match?.[1] ? Number(match[1]) : null;
 }
 
 function delay(milliseconds: number): Promise<void> {

@@ -3,7 +3,6 @@ import { describe, it } from "node:test";
 import {
 	parseBadgePage,
 	parseCurrentGameStatus,
-	parseGameStatusVisibility,
 	parseRemainingDrops,
 	SteamCommunityAuthenticationError,
 	SteamCommunityCardService,
@@ -108,42 +107,30 @@ describe("Steam Community card pages", () => {
 		);
 	});
 
-	it("requires public profile and game details for status polling", () => {
-		assert.equal(
-			parseGameStatusVisibility(`
-				<script>const privacy = {"PrivacyProfile":3,"PrivacyOwnedGames":3};</script>
-			`),
-			"public",
-		);
-		assert.equal(
-			parseGameStatusVisibility(`
-				<select id="PrivacyProfile"><option value="1" selected>Private</option></select>
-				<select id="PrivacyOwnedGames"><option value="1" selected>Private</option></select>
-			`),
-			"hidden",
-		);
-		assert.equal(
-			parseGameStatusVisibility("<main>privacy settings unavailable</main>"),
-			"unknown",
-		);
-	});
-
-	it("skips profile polling when privacy settings hide activity", async () => {
+	it("checks the authenticated account profile directly", async () => {
 		const requested: string[] = [];
-		const service = new SteamCommunityCardService(async (url) => {
+		let receivedCookies: readonly string[] = [];
+		const service = new SteamCommunityCardService(async (url, cookies) => {
 			requested.push(url);
+			receivedCookies = cookies;
 			return {
 				url,
-				html: '<script>const privacy = {"PrivacyProfile":3,"PrivacyOwnedGames":1};</script>',
+				html: `
+					<div class="actual_persona_name">alice</div>
+					<div class="profile_in_game persona offline">
+						<div class="profile_in_game_header">Offline</div>
+					</div>
+				`,
 			};
 		});
 
 		assert.equal(
 			await service.getCurrentGameStatus(["session=secret"]),
-			"unknown",
+			"not-playing",
 		);
 		assert.equal(requested.length, 1);
-		assert.match(requested[0] ?? "", /\/edit\/settings/iu);
+		assert.match(requested[0] ?? "", /\/my\/\?l=english$/iu);
+		assert.deepEqual(receivedCookies, ["session=secret"]);
 	});
 
 	it("rejects a recognizable farmable row when its drop count cannot be parsed", () => {
