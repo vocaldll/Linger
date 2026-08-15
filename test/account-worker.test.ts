@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
 	assessProfileStatus,
+	extendEarlyRetryProtection,
 	guardWebLogOnAfterDisconnect,
 } from "../src/steam/account-worker.js";
 
@@ -62,5 +63,13 @@ describe("Steam account worker", () => {
 		assert.deepEqual(assessProfileStatus("unknown", "online", 1), {
 			action: "fallback",
 		});
+	});
+
+	it("keeps an early retry protected while the connection settles", () => {
+		assert.equal(
+			extendEarlyRetryProtection(Number.POSITIVE_INFINITY, 1_000),
+			31_000,
+		);
+		assert.equal(extendEarlyRetryProtection(0, 1_000), 0);
 	});
 });

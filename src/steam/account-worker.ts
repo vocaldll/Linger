@@ -18,6 +18,7 @@ const MAX_RETRY_MS = 5 * 60 * 1_000;
 const LOGGED_IN_ELSEWHERE_RETRY_MS = 45 * 60 * 1_000;
 const PROFILE_STATUS_POLL_INTERVAL_MS = 30_000;
 const PROFILE_STATUS_CONFIRMATIONS_REQUIRED = 2;
+const EARLY_RETRY_STABILITY_MS = 30_000;
 
 type SteamUserWithMachineTokenEvent = SteamUser & {
 	on(event: "machineAuthToken", listener: (token: string) => void): SteamUser;
@@ -89,6 +90,13 @@ export function assessProfileStatus(
 			};
 }
 
+export function extendEarlyRetryProtection(
+	protectionUntil: number,
+	now: number,
+): number {
+	return protectionUntil > now ? now + EARLY_RETRY_STABILITY_MS : 0;
+}
+
 function presenceChanged(previous: Account, next: Account): boolean {
 	return (
 		previous.visible !== next.visible ||
@@ -113,7 +121,7 @@ export class AccountWorker {
 	#appliedPresenceMode: AppliedPresenceMode | null = null;
 	#webCookies: readonly string[] | null = null;
 	#gameExitWait: GameExitWait | null = null;
-	#earlyGameExitRetry = false;
+	#earlyRetryProtectionUntil = 0;
 
 	constructor(
 		private readonly store: AccountStore,
@@ -150,7 +158,7 @@ export class AccountWorker {
 			this.#retryAt = 0;
 			this.#retryAttempt = 0;
 			this.#gameExitWait = null;
-			this.#earlyGameExitRetry = false;
+			this.#earlyRetryProtectionUntil = 0;
 			if (next.status !== "disabled") {
 				this.#record = this.store.updateRuntime(next.id, {
 					status: "disabled",
@@ -165,7 +173,7 @@ export class AccountWorker {
 			this.#retryAt = 0;
 			this.#retryAttempt = 0;
 			this.#gameExitWait = null;
-			this.#earlyGameExitRetry = false;
+			this.#earlyRetryProtectionUntil = 0;
 		} else if (this.#client && presenceChanged(previous, next)) {
 			this.#applyPresence();
 		}
@@ -230,7 +238,10 @@ export class AccountWorker {
 			this.#retryAttempt = 0;
 			this.#retryAt = 0;
 			this.#gameExitWait = null;
-			this.#earlyGameExitRetry = false;
+			this.#earlyRetryProtectionUntil = extendEarlyRetryProtection(
+				this.#earlyRetryProtectionUntil,
+				Date.now(),
+			);
 			this.#presence?.dispose();
 			this.#presence = new PresenceController(client, 3_000, (error) => {
 				logger.warn(
@@ -464,12 +475,13 @@ export class AccountWorker {
 	#fail(error: SteamError, needsAuthentication: boolean): void {
 		const account = this.#record;
 		const loggedInElsewhere = isLoggedInElsewhere(error);
+		const earlyRetryProtected = Date.now() < this.#earlyRetryProtectionUntil;
 		this.#disconnect(loggedInElsewhere);
 		this.#connecting = false;
 		if (needsAuthentication) {
 			this.#retryAt = Number.POSITIVE_INFINITY;
 			this.#gameExitWait = null;
-			this.#earlyGameExitRetry = false;
+			this.#earlyRetryProtectionUntil = 0;
 			this.#record = this.store.updateRuntime(account.id, {
 				status: "needs_auth",
 				lastError: error.message,
@@ -481,8 +493,9 @@ export class AccountWorker {
 			return;
 		}
 
-		if (loggedInElsewhere && this.#webCookies && !this.#earlyGameExitRetry) {
+		if (loggedInElsewhere && this.#webCookies && !earlyRetryProtected) {
 			this.#retryAt = Number.POSITIVE_INFINITY;
+			this.#earlyRetryProtectionUntil = 0;
 			this.#gameExitWait = {
 				nextCheckAt: 0,
 				checkInFlight: false,
@@ -502,7 +515,7 @@ export class AccountWorker {
 		}
 
 		this.#gameExitWait = null;
-		this.#earlyGameExitRetry = false;
+		this.#earlyRetryProtectionUntil = 0;
 		const delay = loggedInElsewhere
 			? LOGGED_IN_ELSEWHERE_RETRY_MS
 			: Math.min(MAX_RETRY_MS, INITIAL_RETRY_MS * 2 ** this.#retryAttempt);
@@ -555,7 +568,7 @@ export class AccountWorker {
 			}
 			this.#gameExitWait = null;
 			this.#retryAt = 0;
-			this.#earlyGameExitRetry = true;
+			this.#earlyRetryProtectionUntil = Number.POSITIVE_INFINITY;
 			logger.info(
 				"steam",
 				assessment.mode === "confirmed-exit"
@@ -582,7 +595,7 @@ export class AccountWorker {
 
 	#scheduleProfileStatusFallback(reason: string): void {
 		this.#gameExitWait = null;
-		this.#earlyGameExitRetry = false;
+		this.#earlyRetryProtectionUntil = 0;
 		this.#retryAt = Date.now() + LOGGED_IN_ELSEWHERE_RETRY_MS;
 		logger.warn("steam", "Profile status unavailable; using fixed retry", {
 			account: this.#record.accountName,
