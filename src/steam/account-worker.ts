@@ -4,12 +4,20 @@ import type { AccountStore } from "../database.js";
 import type { Account } from "../domain/account.js";
 import { logger } from "../logger.js";
 import { CardFarmingController } from "./card-farming.js";
+import {
+	type CommunityGameStatus,
+	type CurrentGameStatus,
+	SteamCommunityAuthenticationError,
+	SteamCommunityCardService,
+} from "./community-cards.js";
 import { getOwnedGames } from "./game-library.js";
 import { PresenceController } from "./presence.js";
 
 const INITIAL_RETRY_MS = 5_000;
 const MAX_RETRY_MS = 5 * 60 * 1_000;
 const LOGGED_IN_ELSEWHERE_RETRY_MS = 45 * 60 * 1_000;
+const GAME_STATUS_POLL_INTERVAL_MS = 30_000;
+const GAME_STATUS_CONFIRMATIONS_REQUIRED = 2;
 
 type SteamUserWithMachineTokenEvent = SteamUser & {
 	on(event: "machineAuthToken", listener: (token: string) => void): SteamUser;
@@ -17,6 +25,16 @@ type SteamUserWithMachineTokenEvent = SteamUser & {
 
 type SteamError = Error & { eresult?: number };
 type AppliedPresenceMode = "card-farming" | "hour-boosting";
+type GameExitWait = {
+	nextCheckAt: number;
+	checkInFlight: boolean;
+	consecutiveNotPlaying: number;
+};
+
+export type GameExitAssessment =
+	| { action: "wait"; consecutiveNotPlaying: number }
+	| { action: "retry" }
+	| { action: "fallback" };
 
 type WebLogOnClient = {
 	steamID: unknown;
@@ -42,6 +60,22 @@ function isLoggedInElsewhere(error: SteamError): boolean {
 	return /LoggedInElsewhere|LogonSessionReplaced/iu.test(error.message);
 }
 
+export function assessGameExit(
+	status: CurrentGameStatus,
+	consecutiveNotPlaying: number,
+): GameExitAssessment {
+	if (status === "unknown") {
+		return { action: "fallback" };
+	}
+	if (status === "playing") {
+		return { action: "wait", consecutiveNotPlaying: 0 };
+	}
+	const confirmations = consecutiveNotPlaying + 1;
+	return confirmations >= GAME_STATUS_CONFIRMATIONS_REQUIRED
+		? { action: "retry" }
+		: { action: "wait", consecutiveNotPlaying: confirmations };
+}
+
 function presenceChanged(previous: Account, next: Account): boolean {
 	return (
 		previous.visible !== next.visible ||
@@ -64,11 +98,15 @@ export class AccountWorker {
 	#retryAttempt = 0;
 	#retryAt = 0;
 	#appliedPresenceMode: AppliedPresenceMode | null = null;
+	#webCookies: readonly string[] | null = null;
+	#gameExitWait: GameExitWait | null = null;
+	#earlyGameExitRetry = false;
 
 	constructor(
 		private readonly store: AccountStore,
 		private readonly vault: CredentialVault,
 		account: Account,
+		private readonly communityGameStatus: CommunityGameStatus = new SteamCommunityCardService(),
 	) {
 		this.#record = account;
 		if (account.status === "needs_auth") {
@@ -98,6 +136,8 @@ export class AccountWorker {
 			this.#disconnect();
 			this.#retryAt = 0;
 			this.#retryAttempt = 0;
+			this.#gameExitWait = null;
+			this.#earlyGameExitRetry = false;
 			if (next.status !== "disabled") {
 				this.#record = this.store.updateRuntime(next.id, {
 					status: "disabled",
@@ -111,12 +151,18 @@ export class AccountWorker {
 			this.#disconnect();
 			this.#retryAt = 0;
 			this.#retryAttempt = 0;
+			this.#gameExitWait = null;
+			this.#earlyGameExitRetry = false;
 		} else if (this.#client && presenceChanged(previous, next)) {
 			this.#applyPresence();
 		}
 
-		if (!this.#client && !this.#connecting && Date.now() >= this.#retryAt) {
-			this.#connect();
+		if (!this.#client && !this.#connecting) {
+			if (this.#gameExitWait) {
+				void this.#checkGameStatus();
+			} else if (Date.now() >= this.#retryAt) {
+				this.#connect();
+			}
 		}
 	}
 
@@ -170,6 +216,8 @@ export class AccountWorker {
 			this.#connecting = false;
 			this.#retryAttempt = 0;
 			this.#retryAt = 0;
+			this.#gameExitWait = null;
+			this.#earlyGameExitRetry = false;
 			this.#presence?.dispose();
 			this.#presence = new PresenceController(client, 3_000, (error) => {
 				logger.warn(
@@ -251,6 +299,7 @@ export class AccountWorker {
 
 		client.on("webSession", (_sessionId, cookies) => {
 			if (this.#isCurrent(generation, client)) {
+				this.#webCookies = [...cookies];
 				this.#cardFarming?.setWebSession(cookies);
 			}
 		});
@@ -401,10 +450,13 @@ export class AccountWorker {
 
 	#fail(error: SteamError, needsAuthentication: boolean): void {
 		const account = this.#record;
-		this.#disconnect();
+		const loggedInElsewhere = isLoggedInElsewhere(error);
+		this.#disconnect(loggedInElsewhere);
 		this.#connecting = false;
 		if (needsAuthentication) {
 			this.#retryAt = Number.POSITIVE_INFINITY;
+			this.#gameExitWait = null;
+			this.#earlyGameExitRetry = false;
 			this.#record = this.store.updateRuntime(account.id, {
 				status: "needs_auth",
 				lastError: error.message,
@@ -416,7 +468,28 @@ export class AccountWorker {
 			return;
 		}
 
-		const delay = isLoggedInElsewhere(error)
+		if (loggedInElsewhere && this.#webCookies && !this.#earlyGameExitRetry) {
+			this.#retryAt = Number.POSITIVE_INFINITY;
+			this.#gameExitWait = {
+				nextCheckAt: 0,
+				checkInFlight: false,
+				consecutiveNotPlaying: 0,
+			};
+			this.#record = this.store.updateRuntime(account.id, {
+				status: "backoff",
+				lastError: error.message,
+			});
+			logger.warn("steam", "Disconnected; waiting for game exit", {
+				account: account.accountName,
+				error: error.message,
+				poll: "30s",
+			});
+			return;
+		}
+
+		this.#gameExitWait = null;
+		this.#earlyGameExitRetry = false;
+		const delay = loggedInElsewhere
 			? LOGGED_IN_ELSEWHERE_RETRY_MS
 			: Math.min(MAX_RETRY_MS, INITIAL_RETRY_MS * 2 ** this.#retryAttempt);
 		this.#retryAttempt += 1;
@@ -432,7 +505,68 @@ export class AccountWorker {
 		});
 	}
 
-	#disconnect(): void {
+	async #checkGameStatus(): Promise<void> {
+		const wait = this.#gameExitWait;
+		const cookies = this.#webCookies;
+		if (
+			!wait ||
+			!cookies ||
+			wait.checkInFlight ||
+			Date.now() < wait.nextCheckAt
+		) {
+			return;
+		}
+
+		wait.checkInFlight = true;
+		wait.nextCheckAt = Date.now() + GAME_STATUS_POLL_INTERVAL_MS;
+		try {
+			const status =
+				await this.communityGameStatus.getCurrentGameStatus(cookies);
+			if (this.#gameExitWait !== wait || this.#stopped) {
+				return;
+			}
+			const assessment = assessGameExit(status, wait.consecutiveNotPlaying);
+			if (assessment.action === "wait") {
+				wait.consecutiveNotPlaying = assessment.consecutiveNotPlaying;
+				return;
+			}
+			if (assessment.action === "fallback") {
+				this.#scheduleGameStatusFallback("privacy-or-hidden-activity");
+				return;
+			}
+			this.#gameExitWait = null;
+			this.#retryAt = 0;
+			this.#earlyGameExitRetry = true;
+			logger.info("steam", "Game exit confirmed; reconnecting early", {
+				account: this.#record.accountName,
+			});
+		} catch (error) {
+			if (this.#gameExitWait !== wait || this.#stopped) {
+				return;
+			}
+			if (error instanceof SteamCommunityAuthenticationError) {
+				this.#webCookies = null;
+			}
+			this.#scheduleGameStatusFallback(
+				error instanceof Error ? error.message : String(error),
+			);
+		} finally {
+			wait.checkInFlight = false;
+		}
+	}
+
+	#scheduleGameStatusFallback(reason: string): void {
+		this.#gameExitWait = null;
+		this.#earlyGameExitRetry = false;
+		this.#retryAt = Date.now() + LOGGED_IN_ELSEWHERE_RETRY_MS;
+		logger.warn("steam", "Game status unavailable; using fixed retry", {
+			account: this.#record.accountName,
+			reason,
+			retry: "45m",
+		});
+	}
+
+	#disconnect(preserveWebSession = false): void {
 		const client = this.#client;
 		this.#generation += 1;
 		this.#client = null;
@@ -442,6 +576,9 @@ export class AccountWorker {
 		this.#cardFarming = null;
 		this.#appliedPresenceMode = null;
 		this.#connecting = false;
+		if (!preserveWebSession) {
+			this.#webCookies = null;
+		}
 		if (client) {
 			client.removeAllListeners();
 			client.logOff();

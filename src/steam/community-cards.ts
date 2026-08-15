@@ -35,6 +35,13 @@ export interface CardCommunity {
 	getRemainingDrops(cookies: readonly string[], appId: number): Promise<number>;
 }
 
+export type CurrentGameStatus = "playing" | "not-playing" | "unknown";
+export type GameStatusVisibility = "public" | "hidden" | "unknown";
+
+export interface CommunityGameStatus {
+	getCurrentGameStatus(cookies: readonly string[]): Promise<CurrentGameStatus>;
+}
+
 type BadgePage = {
 	entries: CardFarmingEntry[];
 	hasNextPage: boolean;
@@ -139,7 +146,52 @@ export function parseRemainingDrops(html: string, appId: number): number {
 	);
 }
 
-export class SteamCommunityCardService implements CardCommunity {
+export function parseCurrentGameStatus(html: string): CurrentGameStatus {
+	const $ = cheerio.load(html);
+	assertAuthenticated($, "");
+	const status = $(".profile_in_game");
+	const statusText = status.find(".profile_in_game_header").text().trim();
+	if (
+		status.hasClass("in-game") ||
+		status.find(".profile_in_game_name").text().trim() ||
+		/currently in-game/iu.test(statusText)
+	) {
+		return "playing";
+	}
+	if (
+		$(".profile_private_info, .profile_private_message").length > 0 ||
+		/this profile is private/iu.test($.root().text())
+	) {
+		return "unknown";
+	}
+	if (
+		$(".actual_persona_name").length > 0 &&
+		(status.hasClass("online") ||
+			status.hasClass("offline") ||
+			/currently online|currently offline|offline/iu.test(statusText))
+	) {
+		return "not-playing";
+	}
+	return "unknown";
+}
+
+export function parseGameStatusVisibility(html: string): GameStatusVisibility {
+	const $ = cheerio.load(html);
+	assertAuthenticated($, "");
+	const profile = parsePrivacySetting($, html, "PrivacyProfile");
+	const games = parsePrivacySetting($, html, "PrivacyOwnedGames");
+	if (profile !== null && profile !== 3) {
+		return "hidden";
+	}
+	if (games !== null && games !== 3) {
+		return "hidden";
+	}
+	return profile === 3 && games === 3 ? "public" : "unknown";
+}
+
+export class SteamCommunityCardService
+	implements CardCommunity, CommunityGameStatus
+{
 	constructor(
 		private readonly loadPage: CommunityPageLoader = loadSteamCommunityPage,
 		private readonly wait: (milliseconds: number) => Promise<void> = delay,
@@ -188,6 +240,25 @@ export class SteamCommunityCardService implements CardCommunity {
 		);
 		assertResponseAuthenticated(response);
 		return parseRemainingDrops(response.html, appId);
+	}
+
+	async getCurrentGameStatus(
+		cookies: readonly string[],
+	): Promise<CurrentGameStatus> {
+		const settings = await this.loadPage(
+			"https://steamcommunity.com/my/edit/settings?l=english",
+			cookies,
+		);
+		assertResponseAuthenticated(settings);
+		if (parseGameStatusVisibility(settings.html) !== "public") {
+			return "unknown";
+		}
+		const response = await this.loadPage(
+			"https://steamcommunity.com/my/?l=english",
+			cookies,
+		);
+		assertResponseAuthenticated(response);
+		return parseCurrentGameStatus(response.html);
 	}
 }
 
@@ -249,6 +320,19 @@ function assertAuthenticated($: cheerio.CheerioAPI, url: string): void {
 	if (url && /\/login(?:\/|\?|$)/iu.test(url)) {
 		throw new SteamCommunityAuthenticationError();
 	}
+}
+
+function parsePrivacySetting(
+	$: cheerio.CheerioAPI,
+	html: string,
+	name: string,
+): number | null {
+	const controlValue = $(`#${name}, [name="${name}"]`).first().val();
+	if (typeof controlValue === "string" && /^[1-3]$/u.test(controlValue)) {
+		return Number(controlValue);
+	}
+	const match = html.match(new RegExp(`"${name}"\\s*:\\s*([1-3])`, "u"));
+	return match?.[1] ? Number(match[1]) : null;
 }
 
 function delay(milliseconds: number): Promise<void> {

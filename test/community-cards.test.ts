@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
 	parseBadgePage,
+	parseCurrentGameStatus,
+	parseGameStatusVisibility,
 	parseRemainingDrops,
 	SteamCommunityAuthenticationError,
 	SteamCommunityCardService,
@@ -70,6 +72,78 @@ describe("Steam Community card pages", () => {
 			() => parseBadgePage('<form id="login_form"></form>', 1),
 			SteamCommunityAuthenticationError,
 		);
+	});
+
+	it("classifies explicit profile game status", () => {
+		assert.equal(
+			parseCurrentGameStatus(`
+				<div class="actual_persona_name">alice</div>
+				<div class="profile_in_game persona in-game">
+					<div class="profile_in_game_header">Currently In-Game</div>
+				</div>
+			`),
+			"playing",
+		);
+		assert.equal(
+			parseCurrentGameStatus(`
+				<div class="actual_persona_name">alice</div>
+				<div class="profile_in_game persona online">
+					<div class="profile_in_game_header">Currently Online</div>
+				</div>
+			`),
+			"not-playing",
+		);
+	});
+
+	it("treats private and status-less profiles as unknown", () => {
+		assert.equal(
+			parseCurrentGameStatus(
+				'<div class="profile_private_info">This profile is private.</div>',
+			),
+			"unknown",
+		);
+		assert.equal(
+			parseCurrentGameStatus('<div class="actual_persona_name">alice</div>'),
+			"unknown",
+		);
+	});
+
+	it("requires public profile and game details for status polling", () => {
+		assert.equal(
+			parseGameStatusVisibility(`
+				<script>const privacy = {"PrivacyProfile":3,"PrivacyOwnedGames":3};</script>
+			`),
+			"public",
+		);
+		assert.equal(
+			parseGameStatusVisibility(`
+				<select id="PrivacyProfile"><option value="1" selected>Private</option></select>
+				<select id="PrivacyOwnedGames"><option value="1" selected>Private</option></select>
+			`),
+			"hidden",
+		);
+		assert.equal(
+			parseGameStatusVisibility("<main>privacy settings unavailable</main>"),
+			"unknown",
+		);
+	});
+
+	it("skips profile polling when privacy settings hide activity", async () => {
+		const requested: string[] = [];
+		const service = new SteamCommunityCardService(async (url) => {
+			requested.push(url);
+			return {
+				url,
+				html: '<script>const privacy = {"PrivacyProfile":3,"PrivacyOwnedGames":1};</script>',
+			};
+		});
+
+		assert.equal(
+			await service.getCurrentGameStatus(["session=secret"]),
+			"unknown",
+		);
+		assert.equal(requested.length, 1);
+		assert.match(requested[0] ?? "", /\/edit\/settings/iu);
 	});
 
 	it("rejects a recognizable farmable row when its drop count cannot be parsed", () => {

@@ -90,6 +90,8 @@ Card farming temporarily replaces the configured hour-boosting presence. Linger 
 
 Steam does not expose remaining card drops through its documented API, so this feature depends on the badge and game-card page markup. Unexpected, incomplete, rate-limited, or logged-out responses are treated as errors and retried; they are never interpreted as an empty queue or zero remaining drops.
 
+When Steam disconnects Linger because the account is playing elsewhere, Linger uses its last authenticated Community session to check for the game exit every 30 seconds. Two consecutive checks must confirm that the account is no longer in-game before Linger reconnects. Private, hidden, expired, or unrecognized status responses fall back to a 45-minute retry instead of being treated as a game exit.
+
 ## Development
 
 ```sh
