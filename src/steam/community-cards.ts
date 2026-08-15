@@ -35,10 +35,10 @@ export interface CardCommunity {
 	getRemainingDrops(cookies: readonly string[], appId: number): Promise<number>;
 }
 
-export type CurrentGameStatus = "playing" | "not-playing" | "unknown";
+export type ProfileStatus = "in-game" | "online" | "offline" | "unknown";
 
-export interface CommunityGameStatus {
-	getCurrentGameStatus(cookies: readonly string[]): Promise<CurrentGameStatus>;
+export interface CommunityProfileStatus {
+	getProfileStatus(cookies: readonly string[]): Promise<ProfileStatus>;
 }
 
 type BadgePage = {
@@ -145,37 +145,31 @@ export function parseRemainingDrops(html: string, appId: number): number {
 	);
 }
 
-export function parseCurrentGameStatus(html: string): CurrentGameStatus {
+export function parseProfileStatus(html: string): ProfileStatus {
 	const $ = cheerio.load(html);
 	assertAuthenticated($, "");
 	const status = $(".profile_in_game");
 	const statusText = status.find(".profile_in_game_header").text().trim();
-	if (
-		status.hasClass("in-game") ||
-		status.find(".profile_in_game_name").text().trim() ||
-		/currently in-game/iu.test(statusText)
-	) {
-		return "playing";
+	if (status.hasClass("in-game") || /currently in-game/iu.test(statusText)) {
+		return "in-game";
 	}
-	if (
-		$(".profile_private_info, .profile_private_message").length > 0 ||
-		/this profile is private/iu.test($.root().text())
-	) {
+	if ($(".actual_persona_name").length === 0) {
 		return "unknown";
 	}
+	if (status.hasClass("online") || /currently online/iu.test(statusText)) {
+		return "online";
+	}
 	if (
-		$(".actual_persona_name").length > 0 &&
-		(status.hasClass("online") ||
-			status.hasClass("offline") ||
-			/currently online|currently offline|offline/iu.test(statusText))
+		status.hasClass("offline") ||
+		/^(?:currently )?offline$/iu.test(statusText)
 	) {
-		return "not-playing";
+		return "offline";
 	}
 	return "unknown";
 }
 
 export class SteamCommunityCardService
-	implements CardCommunity, CommunityGameStatus
+	implements CardCommunity, CommunityProfileStatus
 {
 	constructor(
 		private readonly loadPage: CommunityPageLoader = loadSteamCommunityPage,
@@ -227,15 +221,13 @@ export class SteamCommunityCardService
 		return parseRemainingDrops(response.html, appId);
 	}
 
-	async getCurrentGameStatus(
-		cookies: readonly string[],
-	): Promise<CurrentGameStatus> {
+	async getProfileStatus(cookies: readonly string[]): Promise<ProfileStatus> {
 		const response = await this.loadPage(
 			"https://steamcommunity.com/my/?l=english",
 			cookies,
 		);
 		assertResponseAuthenticated(response);
-		return parseCurrentGameStatus(response.html);
+		return parseProfileStatus(response.html);
 	}
 }
 

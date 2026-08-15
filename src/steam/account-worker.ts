@@ -5,8 +5,8 @@ import type { Account } from "../domain/account.js";
 import { logger } from "../logger.js";
 import { CardFarmingController } from "./card-farming.js";
 import {
-	type CommunityGameStatus,
-	type CurrentGameStatus,
+	type CommunityProfileStatus,
+	type ProfileStatus,
 	SteamCommunityAuthenticationError,
 	SteamCommunityCardService,
 } from "./community-cards.js";
@@ -16,8 +16,8 @@ import { PresenceController } from "./presence.js";
 const INITIAL_RETRY_MS = 5_000;
 const MAX_RETRY_MS = 5 * 60 * 1_000;
 const LOGGED_IN_ELSEWHERE_RETRY_MS = 45 * 60 * 1_000;
-const GAME_STATUS_POLL_INTERVAL_MS = 30_000;
-const GAME_STATUS_CONFIRMATIONS_REQUIRED = 2;
+const PROFILE_STATUS_POLL_INTERVAL_MS = 30_000;
+const PROFILE_STATUS_CONFIRMATIONS_REQUIRED = 2;
 
 type SteamUserWithMachineTokenEvent = SteamUser & {
 	on(event: "machineAuthToken", listener: (token: string) => void): SteamUser;
@@ -28,12 +28,17 @@ type AppliedPresenceMode = "card-farming" | "hour-boosting";
 type GameExitWait = {
 	nextCheckAt: number;
 	checkInFlight: boolean;
-	consecutiveNotPlaying: number;
+	lastStatus: "online" | "offline" | null;
+	consecutiveMatches: number;
 };
 
-export type GameExitAssessment =
-	| { action: "wait"; consecutiveNotPlaying: number }
-	| { action: "retry" }
+export type ProfileStatusAssessment =
+	| {
+			action: "wait";
+			lastStatus: "online" | "offline" | null;
+			consecutiveMatches: number;
+	  }
+	| { action: "retry"; mode: "confirmed-exit" | "offline-probe" }
 	| { action: "fallback" };
 
 type WebLogOnClient = {
@@ -60,20 +65,28 @@ function isLoggedInElsewhere(error: SteamError): boolean {
 	return /LoggedInElsewhere|LogonSessionReplaced/iu.test(error.message);
 }
 
-export function assessGameExit(
-	status: CurrentGameStatus,
-	consecutiveNotPlaying: number,
-): GameExitAssessment {
+export function assessProfileStatus(
+	status: ProfileStatus,
+	lastStatus: "online" | "offline" | null,
+	consecutiveMatches: number,
+): ProfileStatusAssessment {
 	if (status === "unknown") {
 		return { action: "fallback" };
 	}
-	if (status === "playing") {
-		return { action: "wait", consecutiveNotPlaying: 0 };
+	if (status === "in-game") {
+		return { action: "wait", lastStatus: null, consecutiveMatches: 0 };
 	}
-	const confirmations = consecutiveNotPlaying + 1;
-	return confirmations >= GAME_STATUS_CONFIRMATIONS_REQUIRED
-		? { action: "retry" }
-		: { action: "wait", consecutiveNotPlaying: confirmations };
+	const confirmations = status === lastStatus ? consecutiveMatches + 1 : 1;
+	return confirmations >= PROFILE_STATUS_CONFIRMATIONS_REQUIRED
+		? {
+				action: "retry",
+				mode: status === "online" ? "confirmed-exit" : "offline-probe",
+			}
+		: {
+				action: "wait",
+				lastStatus: status,
+				consecutiveMatches: confirmations,
+			};
 }
 
 function presenceChanged(previous: Account, next: Account): boolean {
@@ -106,7 +119,7 @@ export class AccountWorker {
 		private readonly store: AccountStore,
 		private readonly vault: CredentialVault,
 		account: Account,
-		private readonly communityGameStatus: CommunityGameStatus = new SteamCommunityCardService(),
+		private readonly communityProfileStatus: CommunityProfileStatus = new SteamCommunityCardService(),
 	) {
 		this.#record = account;
 		if (account.status === "needs_auth") {
@@ -159,7 +172,7 @@ export class AccountWorker {
 
 		if (!this.#client && !this.#connecting) {
 			if (this.#gameExitWait) {
-				void this.#checkGameStatus();
+				void this.#checkProfileStatus();
 			} else if (Date.now() >= this.#retryAt) {
 				this.#connect();
 			}
@@ -473,7 +486,8 @@ export class AccountWorker {
 			this.#gameExitWait = {
 				nextCheckAt: 0,
 				checkInFlight: false,
-				consecutiveNotPlaying: 0,
+				lastStatus: null,
+				consecutiveMatches: 0,
 			};
 			this.#record = this.store.updateRuntime(account.id, {
 				status: "backoff",
@@ -505,7 +519,7 @@ export class AccountWorker {
 		});
 	}
 
-	async #checkGameStatus(): Promise<void> {
+	async #checkProfileStatus(): Promise<void> {
 		const wait = this.#gameExitWait;
 		const cookies = this.#webCookies;
 		if (
@@ -518,28 +532,39 @@ export class AccountWorker {
 		}
 
 		wait.checkInFlight = true;
-		wait.nextCheckAt = Date.now() + GAME_STATUS_POLL_INTERVAL_MS;
+		wait.nextCheckAt = Date.now() + PROFILE_STATUS_POLL_INTERVAL_MS;
 		try {
 			const status =
-				await this.communityGameStatus.getCurrentGameStatus(cookies);
+				await this.communityProfileStatus.getProfileStatus(cookies);
 			if (this.#gameExitWait !== wait || this.#stopped) {
 				return;
 			}
-			const assessment = assessGameExit(status, wait.consecutiveNotPlaying);
+			const assessment = assessProfileStatus(
+				status,
+				wait.lastStatus,
+				wait.consecutiveMatches,
+			);
 			if (assessment.action === "wait") {
-				wait.consecutiveNotPlaying = assessment.consecutiveNotPlaying;
+				wait.lastStatus = assessment.lastStatus;
+				wait.consecutiveMatches = assessment.consecutiveMatches;
 				return;
 			}
 			if (assessment.action === "fallback") {
-				this.#scheduleGameStatusFallback("unrecognized-profile-status");
+				this.#scheduleProfileStatusFallback("unrecognized-profile-status");
 				return;
 			}
 			this.#gameExitWait = null;
 			this.#retryAt = 0;
 			this.#earlyGameExitRetry = true;
-			logger.info("steam", "Game exit confirmed; reconnecting early", {
-				account: this.#record.accountName,
-			});
+			logger.info(
+				"steam",
+				assessment.mode === "confirmed-exit"
+					? "Game exit confirmed; reconnecting early"
+					: "Profile remained offline; probing reconnect",
+				{
+					account: this.#record.accountName,
+				},
+			);
 		} catch (error) {
 			if (this.#gameExitWait !== wait || this.#stopped) {
 				return;
@@ -547,7 +572,7 @@ export class AccountWorker {
 			if (error instanceof SteamCommunityAuthenticationError) {
 				this.#webCookies = null;
 			}
-			this.#scheduleGameStatusFallback(
+			this.#scheduleProfileStatusFallback(
 				error instanceof Error ? error.message : String(error),
 			);
 		} finally {
@@ -555,11 +580,11 @@ export class AccountWorker {
 		}
 	}
 
-	#scheduleGameStatusFallback(reason: string): void {
+	#scheduleProfileStatusFallback(reason: string): void {
 		this.#gameExitWait = null;
 		this.#earlyGameExitRetry = false;
 		this.#retryAt = Date.now() + LOGGED_IN_ELSEWHERE_RETRY_MS;
-		logger.warn("steam", "Game status unavailable; using fixed retry", {
+		logger.warn("steam", "Profile status unavailable; using fixed retry", {
 			account: this.#record.accountName,
 			reason,
 			retry: "45m",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
 	parseBadgePage,
-	parseCurrentGameStatus,
+	parseProfileStatus,
 	parseRemainingDrops,
 	SteamCommunityAuthenticationError,
 	SteamCommunityCardService,
@@ -73,36 +73,46 @@ describe("Steam Community card pages", () => {
 		);
 	});
 
-	it("classifies explicit profile game status", () => {
+	it("classifies explicit profile status", () => {
 		assert.equal(
-			parseCurrentGameStatus(`
+			parseProfileStatus(`
 				<div class="actual_persona_name">alice</div>
 				<div class="profile_in_game persona in-game">
 					<div class="profile_in_game_header">Currently In-Game</div>
 				</div>
 			`),
-			"playing",
+			"in-game",
 		);
 		assert.equal(
-			parseCurrentGameStatus(`
+			parseProfileStatus(`
 				<div class="actual_persona_name">alice</div>
 				<div class="profile_in_game persona online">
 					<div class="profile_in_game_header">Currently Online</div>
 				</div>
 			`),
-			"not-playing",
+			"online",
+		);
+		assert.equal(
+			parseProfileStatus(`
+				<div class="actual_persona_name">alice</div>
+				<div class="profile_in_game persona offline">
+					<div class="profile_in_game_header">Currently Offline</div>
+					<div class="profile_in_game_name">Last Online 15 mins ago</div>
+				</div>
+			`),
+			"offline",
 		);
 	});
 
 	it("treats private and status-less profiles as unknown", () => {
 		assert.equal(
-			parseCurrentGameStatus(
+			parseProfileStatus(
 				'<div class="profile_private_info">This profile is private.</div>',
 			),
 			"unknown",
 		);
 		assert.equal(
-			parseCurrentGameStatus('<div class="actual_persona_name">alice</div>'),
+			parseProfileStatus('<div class="actual_persona_name">alice</div>'),
 			"unknown",
 		);
 	});
@@ -124,10 +134,7 @@ describe("Steam Community card pages", () => {
 			};
 		});
 
-		assert.equal(
-			await service.getCurrentGameStatus(["session=secret"]),
-			"not-playing",
-		);
+		assert.equal(await service.getProfileStatus(["session=secret"]), "offline");
 		assert.equal(requested.length, 1);
 		assert.match(requested[0] ?? "", /\/my\/\?l=english$/iu);
 		assert.deepEqual(receivedCookies, ["session=secret"]);

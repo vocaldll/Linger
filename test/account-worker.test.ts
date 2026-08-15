@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-	assessGameExit,
+	assessProfileStatus,
 	guardWebLogOnAfterDisconnect,
 } from "../src/steam/account-worker.js";
 
@@ -24,19 +24,43 @@ describe("Steam account worker", () => {
 		assert.equal(calls, 1);
 	});
 
-	it("requires two consecutive confirmations before retrying", () => {
-		assert.deepEqual(assessGameExit("not-playing", 0), {
+	it("requires two consecutive online observations before retrying", () => {
+		assert.deepEqual(assessProfileStatus("online", null, 0), {
 			action: "wait",
-			consecutiveNotPlaying: 1,
+			lastStatus: "online",
+			consecutiveMatches: 1,
 		});
-		assert.deepEqual(assessGameExit("not-playing", 1), { action: "retry" });
-		assert.deepEqual(assessGameExit("playing", 1), {
+		assert.deepEqual(assessProfileStatus("online", "online", 1), {
+			action: "retry",
+			mode: "confirmed-exit",
+		});
+		assert.deepEqual(assessProfileStatus("in-game", "online", 1), {
 			action: "wait",
-			consecutiveNotPlaying: 0,
+			lastStatus: null,
+			consecutiveMatches: 0,
 		});
 	});
 
-	it("falls back when game status is not observable", () => {
-		assert.deepEqual(assessGameExit("unknown", 1), { action: "fallback" });
+	it("probes once after two consecutive offline observations", () => {
+		assert.deepEqual(assessProfileStatus("offline", null, 0), {
+			action: "wait",
+			lastStatus: "offline",
+			consecutiveMatches: 1,
+		});
+		assert.deepEqual(assessProfileStatus("offline", "offline", 1), {
+			action: "retry",
+			mode: "offline-probe",
+		});
+		assert.deepEqual(assessProfileStatus("offline", "online", 1), {
+			action: "wait",
+			lastStatus: "offline",
+			consecutiveMatches: 1,
+		});
+	});
+
+	it("falls back when profile status is not observable", () => {
+		assert.deepEqual(assessProfileStatus("unknown", "online", 1), {
+			action: "fallback",
+		});
 	});
 });
