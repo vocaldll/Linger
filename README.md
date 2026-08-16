@@ -22,7 +22,6 @@ Linger is a terminal-based, multi-account Steam hour booster and card farmer. It
 ## Setup
 
 ```sh
-corepack enable
 pnpm install
 pnpm build
 ```
