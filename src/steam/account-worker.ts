@@ -366,7 +366,6 @@ export class AccountWorker {
 			client.logOn({
 				refreshToken,
 				...(machineAuthToken ? { machineAuthToken } : {}),
-				machineName: "Linger",
 			});
 		} catch (error) {
 			this.#fail(

@@ -5,7 +5,6 @@ import {
 } from "steam-session";
 
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1_000;
-const MACHINE_NAME = "Linger";
 
 export type LoginMethod =
 	| {
@@ -67,7 +66,6 @@ export async function authenticate(
 	createSession: () => LoginSession = () =>
 		new LoginSession(EAuthTokenPlatformType.SteamClient, {
 			machineId: true,
-			machineFriendlyName: MACHINE_NAME,
 		}),
 ): Promise<AuthenticationResult> {
 	const session = createSession();

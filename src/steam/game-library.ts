@@ -96,7 +96,6 @@ export function fetchOwnedGamesForLogin(
 				refreshToken,
 				...(machineAuthToken ? { machineAuthToken } : {}),
 				steamID: steamId,
-				machineName: "Linger library",
 			});
 		} catch (error) {
 			finish(error instanceof Error ? error : new Error(String(error)));
