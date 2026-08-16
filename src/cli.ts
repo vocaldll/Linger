@@ -28,6 +28,7 @@ async function runService(): Promise<void> {
 	const runner = new Runner(
 		store,
 		new CredentialVault(config.masterKey),
+		config.steamMachineIdentity,
 		config.reconcileIntervalMs,
 	);
 	let stopping = false;
@@ -52,7 +53,11 @@ async function manageAccounts(): Promise<void> {
 	const config = loadConfig();
 	const store = new AccountStore(config.databasePath);
 	try {
-		await runManagementTui(store, new CredentialVault(config.masterKey));
+		await runManagementTui(
+			store,
+			new CredentialVault(config.masterKey),
+			config.steamMachineIdentity,
+		);
 	} finally {
 		store.close();
 	}

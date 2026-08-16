@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import { CredentialVault } from "../src/crypto.js";
 import { AccountStore } from "../src/database.js";
 import { Runner } from "../src/runner.js";
+import { createSteamMachineIdentity } from "../src/steam/machine-identity.js";
 
 describe("Runner", () => {
 	it("starts, stops, and releases its database lease", async () => {
@@ -15,6 +16,7 @@ describe("Runner", () => {
 			const runner = new Runner(
 				store,
 				new CredentialVault("runner lifecycle test master key"),
+				createSteamMachineIdentity("runner-test-device"),
 				10,
 			);
 			const running = runner.start();

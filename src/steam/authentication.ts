@@ -3,6 +3,7 @@ import {
 	EAuthTokenPlatformType,
 	LoginSession,
 } from "steam-session";
+import type { SteamMachineIdentity } from "./machine-identity.js";
 
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1_000;
 
@@ -63,9 +64,11 @@ function isCodeChoice(choice: GuardChoice): boolean {
 export async function authenticate(
 	method: LoginMethod,
 	interaction: AuthenticationInteraction,
+	machineIdentity: SteamMachineIdentity,
 	createSession: () => LoginSession = () =>
 		new LoginSession(EAuthTokenPlatformType.SteamClient, {
-			machineId: true,
+			machineId: machineIdentity.machineId,
+			machineFriendlyName: machineIdentity.machineName,
 		}),
 ): Promise<AuthenticationResult> {
 	const session = createSession();

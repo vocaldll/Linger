@@ -7,12 +7,17 @@ import {
 	writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import {
+	loadOrCreateSteamMachineIdentity,
+	type SteamMachineIdentity,
+} from "./steam/machine-identity.js";
 
 export type AppConfig = {
 	dataDir: string;
 	databasePath: string;
 	masterKey: string;
 	reconcileIntervalMs: number;
+	steamMachineIdentity: SteamMachineIdentity;
 };
 
 const DEFAULT_RECONCILE_INTERVAL_MS = 2_000;
@@ -114,5 +119,6 @@ export function loadConfig(): AppConfig {
 			DEFAULT_RECONCILE_INTERVAL_MS,
 			"LINGER_RECONCILE_INTERVAL_MS",
 		),
+		steamMachineIdentity: loadOrCreateSteamMachineIdentity(dataDir),
 	};
 }

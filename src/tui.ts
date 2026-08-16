@@ -28,6 +28,7 @@ import {
 	type LoginMethod,
 } from "./steam/authentication.js";
 import { fetchOwnedGamesForLogin } from "./steam/game-library.js";
+import type { SteamMachineIdentity } from "./steam/machine-identity.js";
 import { gamePicker } from "./tui/game-picker.js";
 import { LINGER_THEME, printLingerHeader, ui } from "./tui/theme.js";
 
@@ -489,6 +490,7 @@ function accountSummary(account: Account): string {
 
 async function performLogin(
 	vault: CredentialVault,
+	machineIdentity: SteamMachineIdentity,
 	existing?: Account,
 ): Promise<AuthenticationResult> {
 	const selected = await promptLoginMethod(existing);
@@ -503,14 +505,19 @@ async function performLogin(
 			machineAuthToken: vault.decrypt(existing.machineAuthTokenEncrypted),
 		};
 	}
-	return authenticate(method, createAuthenticationInteraction());
+	return authenticate(
+		method,
+		createAuthenticationInteraction(),
+		machineIdentity,
+	);
 }
 
 async function addAccount(
 	store: AccountStore,
 	vault: CredentialVault,
+	machineIdentity: SteamMachineIdentity,
 ): Promise<void> {
-	const login = await performLogin(vault);
+	const login = await performLogin(vault, machineIdentity);
 	if (store.getByName(login.accountName)) {
 		throw new Error(`Account already exists: ${login.accountName}`);
 	}
@@ -520,6 +527,7 @@ async function addAccount(
 		ownedGames = await fetchOwnedGamesForLogin(
 			login.refreshToken,
 			login.steamId,
+			machineIdentity,
 			login.machineAuthToken,
 		);
 	} catch (error) {
@@ -552,8 +560,9 @@ async function reauthenticateAccount(
 	store: AccountStore,
 	vault: CredentialVault,
 	account: Account,
+	machineIdentity: SteamMachineIdentity,
 ): Promise<Account> {
-	const login = await performLogin(vault, account);
+	const login = await performLogin(vault, machineIdentity, account);
 	if (account.steamId && login.steamId !== account.steamId) {
 		throw new Error("That login belongs to a different Steam account");
 	}
@@ -573,6 +582,7 @@ async function manageAccount(
 	store: AccountStore,
 	vault: CredentialVault,
 	initial: Account,
+	machineIdentity: SteamMachineIdentity,
 ): Promise<void> {
 	let account = initial;
 	while (true) {
@@ -698,7 +708,12 @@ async function manageAccount(
 				pauseMessage("Restart requested. The runner will apply it shortly.");
 				break;
 			case "reauthenticate":
-				account = await reauthenticateAccount(store, vault, account);
+				account = await reauthenticateAccount(
+					store,
+					vault,
+					account,
+					machineIdentity,
+				);
 				break;
 			case "delete":
 				if (
@@ -746,6 +761,7 @@ async function chooseAccount(store: AccountStore): Promise<Account | null> {
 export async function runManagementTui(
 	store: AccountStore,
 	vault: CredentialVault,
+	machineIdentity: SteamMachineIdentity,
 ): Promise<void> {
 	if (!process.stdin.isTTY || !process.stdout.isTTY) {
 		throw new Error(
@@ -767,11 +783,11 @@ export async function runManagementTui(
 
 		try {
 			if (action === "add") {
-				await addAccount(store, vault);
+				await addAccount(store, vault, machineIdentity);
 			} else if (action === "accounts") {
 				const account = await chooseAccount(store);
 				if (account) {
-					await manageAccount(store, vault, account);
+					await manageAccount(store, vault, account, machineIdentity);
 				}
 			} else {
 				return;

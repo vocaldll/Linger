@@ -6,6 +6,7 @@ import {
 	type AuthenticationInteraction,
 	authenticate,
 } from "../src/steam/authentication.js";
+import { createSteamMachineIdentity } from "../src/steam/machine-identity.js";
 
 class FakeQrSession extends EventEmitter {
 	loginTimeout = 0;
@@ -50,6 +51,7 @@ describe("Steam authentication", () => {
 		const result = await authenticate(
 			{ type: "qr" },
 			interaction,
+			createSteamMachineIdentity("authentication-test-device"),
 			() => session as unknown as LoginSession,
 		);
 

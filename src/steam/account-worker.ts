@@ -11,6 +11,7 @@ import {
 	SteamCommunityCardService,
 } from "./community-cards.js";
 import { getOwnedGames } from "./game-library.js";
+import type { SteamMachineIdentity } from "./machine-identity.js";
 import { PresenceController } from "./presence.js";
 
 const INITIAL_RETRY_MS = 5_000;
@@ -128,6 +129,7 @@ export class AccountWorker {
 		private readonly store: AccountStore,
 		private readonly vault: CredentialVault,
 		account: Account,
+		private readonly machineIdentity: SteamMachineIdentity,
 		private readonly communityProfileStatus: CommunityProfileStatus = new SteamCommunityCardService(),
 	) {
 		this.#record = account;
@@ -228,6 +230,8 @@ export class AccountWorker {
 			renewRefreshTokens: true,
 			dataDirectory: null,
 			enablePicsCache: false,
+			machineIdFormat: [...this.machineIdentity.machineIdFormat],
+			machineIdType: SteamUser.EMachineIDType.AccountNameGenerated,
 		});
 		guardWebLogOnAfterDisconnect(client);
 		this.#client = client;
@@ -366,6 +370,7 @@ export class AccountWorker {
 			client.logOn({
 				refreshToken,
 				...(machineAuthToken ? { machineAuthToken } : {}),
+				machineName: this.machineIdentity.machineName,
 			});
 		} catch (error) {
 			this.#fail(

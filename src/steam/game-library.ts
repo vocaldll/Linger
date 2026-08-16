@@ -1,5 +1,6 @@
 import SteamUser from "steam-user";
 import type { OwnedGame } from "../domain/game-library.js";
+import type { SteamMachineIdentity } from "./machine-identity.js";
 
 const LIBRARY_LOGIN_TIMEOUT_MS = 30_000;
 
@@ -42,6 +43,7 @@ export async function getOwnedGames(
 export function fetchOwnedGamesForLogin(
 	refreshToken: string,
 	steamId: string,
+	machineIdentity: SteamMachineIdentity,
 	machineAuthToken?: string | null,
 ): Promise<OwnedGame[]> {
 	const client = new SteamUser({
@@ -49,6 +51,8 @@ export function fetchOwnedGamesForLogin(
 		renewRefreshTokens: false,
 		dataDirectory: null,
 		enablePicsCache: false,
+		machineIdFormat: [...machineIdentity.machineIdFormat],
+		machineIdType: SteamUser.EMachineIDType.AccountNameGenerated,
 	});
 
 	return new Promise<OwnedGame[]>((resolve, reject) => {
@@ -95,6 +99,7 @@ export function fetchOwnedGamesForLogin(
 			client.logOn({
 				refreshToken,
 				...(machineAuthToken ? { machineAuthToken } : {}),
+				machineName: machineIdentity.machineName,
 				steamID: steamId,
 			});
 		} catch (error) {

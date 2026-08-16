@@ -3,6 +3,7 @@ import type { CredentialVault } from "./crypto.js";
 import type { AccountStore } from "./database.js";
 import { logger } from "./logger.js";
 import { AccountWorker } from "./steam/account-worker.js";
+import type { SteamMachineIdentity } from "./steam/machine-identity.js";
 
 export class Runner {
 	readonly #workers = new Map<string, AccountWorker>();
@@ -14,6 +15,7 @@ export class Runner {
 	constructor(
 		private readonly store: AccountStore,
 		private readonly vault: CredentialVault,
+		private readonly machineIdentity: SteamMachineIdentity,
 		private readonly reconcileIntervalMs: number,
 	) {}
 
@@ -94,7 +96,12 @@ export class Runner {
 		for (const account of accounts) {
 			let worker = this.#workers.get(account.id);
 			if (!worker) {
-				worker = new AccountWorker(this.store, this.vault, account);
+				worker = new AccountWorker(
+					this.store,
+					this.vault,
+					account,
+					this.machineIdentity,
+				);
 				this.#workers.set(account.id, worker);
 			}
 			try {
