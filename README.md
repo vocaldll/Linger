@@ -51,19 +51,21 @@ docker compose up -d
 
 Follow the runner logs with `docker compose logs -f linger`.
 
-Compose stores `linger.sqlite` and `master.key` in the `linger-data` volume mounted at `/app/data`.
+Compose stores `linger.sqlite`, `master.key`, and `steam-device-id` in the `linger-data` volume mounted at `/app/data`.
 
 ## Configuration
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `LINGER_DATA_DIR` | `./data` | Directory for the database and generated master key |
+| `LINGER_DATA_DIR` | `./data` | Directory for the database, generated master key, and Steam device identity |
 | `LINGER_DB_PATH` | `<data dir>/linger.sqlite` | Override the SQLite database path |
 | `LINGER_MASTER_KEY` | Generated automatically | Encryption key with at least 32 characters |
 | `LINGER_MASTER_KEY_FILE` | — | Read the encryption key from a file; takes precedence over `LINGER_MASTER_KEY` |
 | `LINGER_RECONCILE_INTERVAL_MS` | `2000` | How often the runner checks for account changes |
 
 Back up the data directory or Docker volume as a unit. Deleting it removes Linger's configuration, and saved account tokens cannot be decrypted if the master key is lost.
+
+`steam-device-id` is generated randomly on first run and gives every installation a stable identity when connecting to Steam. It contains no hostname or hardware identifier and is never sent to Steam directly. Copying the data directory also copies this identity.
 
 ## Operational notes
 
