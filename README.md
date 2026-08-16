@@ -2,8 +2,6 @@
 
 Linger is a terminal-based, multi-account Steam hour booster and card farmer.
 
-![Linger account manager showing multiple accounts and account configuration](docs/showcase.png)
-
 ## Features
 
 - Manage multiple Steam accounts through an interactive TUI
