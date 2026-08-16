@@ -8,9 +8,8 @@ Linger is a terminal-based, multi-account Steam hour booster and card farmer. It
 
 - Manage multiple Steam accounts from an interactive TUI
 - Sign in using a Steam Mobile QR code or username, password, and Steam Guard
-- Pick games from the account's Steam library, with search and playtime sorting
-- Automatically farm every currently available Steam trading-card drop, one game at a time
-- Add AppIDs manually when a game is unavailable in the library picker
+- Search, sort, and select library games, or enter AppIDs manually
+- Boost multiple games or automatically farm every available trading-card drop
 - Configure visibility, a custom game title, and recent-activity clearing per account
 - Encrypt saved Steam tokens with a local master key
 
@@ -19,22 +18,14 @@ Linger is a terminal-based, multi-account Steam hour booster and card farmer. It
 - Node.js 24 or newer
 - pnpm 11
 
-## Setup
+## Quick start
+
+Install and build Linger, open the manager to add accounts, then start the runner:
 
 ```sh
 pnpm install
 pnpm build
-```
-
-Open the manager and add an account:
-
-```sh
 pnpm manage
-```
-
-Then start the runner:
-
-```sh
 pnpm start
 ```
 
@@ -50,26 +41,9 @@ docker compose run --rm linger manage
 docker compose up -d
 ```
 
-Follow the runner logs with:
+Follow the runner logs with `docker compose logs -f linger`.
 
-```sh
-docker compose logs -f linger
-```
-
-### Docker data
-
-The included Compose file mounts the `linger-data` volume at `/app/data` inside the container. It contains:
-
-- `/app/data/linger.sqlite` — accounts, settings, and cached game libraries
-- `/app/data/master.key` — the key used to encrypt saved Steam tokens
-
-Docker manages the volume's location on the host. To inspect it, run:
-
-```sh
-docker volume inspect linger-data
-```
-
-Removing the volume deletes Linger's configuration. Keep the volume backed up as a unit so the database and encryption key stay together.
+Compose stores `linger.sqlite` and `master.key` in the `linger-data` volume mounted at `/app/data`.
 
 ## Configuration
 
@@ -81,17 +55,17 @@ Removing the volume deletes Linger's configuration. Keep the volume backed up as
 | `LINGER_MASTER_KEY_FILE` | — | Read the encryption key from a file; takes precedence over `LINGER_MASTER_KEY` |
 | `LINGER_RECONCILE_INTERVAL_MS` | `2000` | How often the runner checks for account changes |
 
-Keep the data directory or configured master key backed up. Saved account tokens cannot be decrypted if the key is lost.
+Back up the data directory or Docker volume as a unit. Deleting it removes Linger's configuration, and saved account tokens cannot be decrypted if the master key is lost.
 
-## Notes
+## Operational notes
 
-Steam supports at most 32 simultaneous game entries. A custom game title uses one slot, and recent-activity clearing reserves three additional slots. If Steam cannot return an account's library, games can still be configured using AppIDs.
+- Steam supports at most 32 simultaneous game entries. A custom title uses one slot, and recent-activity clearing reserves three. Games can still be configured using AppIDs if the library is unavailable.
 
-Card farming temporarily replaces the configured hour-boosting presence. Linger scans the authenticated Steam Community badge pages, persists the farming queue, and checks the active game when Steam announces new inventory items or after a periodic fallback interval. Once the queue is complete, card farming turns itself off and normal hour boosting resumes. If no normal AppIDs or custom game are configured, the account is disabled instead.
+- Card farming temporarily replaces normal hour boosting. When the queue finishes, boosting resumes, or the account is disabled if no normal presence is configured.
 
-Steam does not expose remaining card drops through its documented API, so this feature depends on the badge and game-card page markup. Unexpected, incomplete, rate-limited, or logged-out responses are treated as errors and retried; they are never interpreted as an empty queue or zero remaining drops.
+- Steam has no documented API for remaining card drops, so detection relies on Community badge markup. Ambiguous, rate-limited, or logged-out responses are retried rather than treated as zero drops.
 
-When Steam disconnects Linger because the account is playing elsewhere, Linger uses its last authenticated Community session to check the account's own profile every 30 seconds. Two consecutive online results confirm that the game has exited and allow an early reconnect. Because Steam's invisible mode appears offline both while playing and after exit, two consecutive offline results trigger one reconnect probe instead. If Steam rejects that probe as logged in elsewhere, or if the profile response is expired or unrecognized, Linger falls back to a 45-minute retry.
+- If an account starts playing elsewhere, Linger pauses and reconnects automatically after the game exits. Invisible accounts may take longer to detect.
 
 ## Development
 
