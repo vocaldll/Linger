@@ -1,6 +1,6 @@
 # Linger
 
-Linger is a terminal-based, multi-account Steam hour booster and card farmer.
+Linger is a terminal-based Steam hour booster and card farmer with multi-account support.
 
 > [!WARNING]
 > Using Linger to boost playtime or automatically farm trading cards violates Section 4.C, "Automation," of the [Steam Subscriber Agreement](https://store.steampowered.com/subscriber_agreement/). Valve prohibits automation that fakes playtime or earns rewards without genuine user input. Under Section 4.D, Valve may restrict or terminate affected Steam accounts. Use Linger at your own risk.
