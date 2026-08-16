@@ -6,12 +6,19 @@ Linger is a terminal-based, multi-account Steam hour booster and card farmer. It
 
 ## Features
 
-- Manage multiple Steam accounts from an interactive TUI
-- Sign in using a Steam Mobile QR code or username, password, and Steam Guard
-- Search, sort, and select library games, or enter AppIDs manually
-- Boost multiple games or automatically farm every available trading-card drop
-- Configure visibility, a custom game title, and recent-activity clearing per account
-- Encrypt saved Steam tokens with a local master key
+- Manage multiple Steam accounts through an interactive TUI
+- Sign in with a Steam Mobile QR code or Steam credentials
+- Use Steam passwords only during sign-in and never save them locally
+- Browse and search your Steam library
+- Add games manually by AppID
+- Boost multiple games simultaneously
+- Automatically farm available trading-card drops
+- Reconnect disconnected accounts automatically
+- Configure online visibility per account
+- Display a custom game title
+- Clear recent Steam activity
+- Encrypt saved Steam session tokens with a local master key
+- Apply configuration changes without restarting the runner
 
 ## Requirements
 
