@@ -6,7 +6,7 @@ const PAGE_DELAY_MS = 1_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const USER_AGENT =
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-	"(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Linger/0.1";
+	"(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const APP_ID_PATTERN = /\/gamecards\/(\d+)\/?/u;
 const REMAINING_DROPS_PATTERN = /(\d+)\s+card drops? remaining/iu;
 const ZERO_DROPS_PATTERN = /(?:no|0)\s+card drops? remaining/iu;
