@@ -24,7 +24,7 @@ import {
 import { LINGER_THEME, ui } from "./theme.js";
 
 export type GamePickerResult = {
-	action: "save" | "cancel" | "manual" | "sort";
+	action: "save" | "cancel" | "manual" | "refresh" | "sort";
 	selectedAppIds: number[];
 	sort: GameSort;
 	query: string;
@@ -37,9 +37,11 @@ type GamePickerConfig = {
 	sort: GameSort;
 	maximumSelected: number;
 	allowEmpty: boolean;
+	allowRefresh?: boolean;
 	initialQuery?: string;
 	initialActiveAppId?: number | null;
 	notice?: string;
+	errorNotice?: string;
 	pageSize?: number;
 };
 
@@ -177,6 +179,8 @@ export const gamePicker: (
 			complete("sort");
 		} else if (key.name === "m") {
 			complete("manual");
+		} else if (key.name === "r" && config.allowRefresh) {
+			complete("refresh");
 		} else if (key.name === "escape") {
 			if (query) {
 				setQuery("");
@@ -240,6 +244,9 @@ export const gamePicker: (
 				`${ui.key("space")} ${ui.muted("toggle")}`,
 				`${ui.key("/")} ${ui.muted("search")}`,
 				`${ui.key("s")} ${ui.muted("sort")}`,
+				...(config.allowRefresh
+					? [`${ui.key("r")} ${ui.muted("refresh library")}`]
+					: []),
 				`${ui.key("m")} ${ui.muted("enter AppIDs")}`,
 				`${ui.key("enter")} ${ui.muted("save")}`,
 				`${ui.key("esc")} ${ui.muted("clear/cancel")}`,
@@ -253,6 +260,7 @@ export const gamePicker: (
 		page,
 		"",
 		config.notice ? ui.success(`✓ ${config.notice}`) : null,
+		config.errorNotice ? ui.danger(`! ${config.errorNotice}`) : null,
 		error ? ui.danger(`! ${error}`) : null,
 		help,
 	]

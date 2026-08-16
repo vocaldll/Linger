@@ -45,6 +45,18 @@ type OwnedGameRow = {
 	playtime_forever: number;
 };
 
+export type LibraryRefreshState = {
+	requestedNonce: number;
+	completedNonce: number;
+	lastError: string | null;
+};
+
+type LibraryRefreshRow = {
+	requested_nonce: number;
+	completed_nonce: number;
+	last_error: string | null;
+};
+
 const ACCOUNT_COLUMNS = `
   id, account_name, steam_id, refresh_token_encrypted, machine_auth_token_encrypted,
   app_ids_json, custom_game, visible, clear_recent_activity, card_farming_enabled,
@@ -380,6 +392,54 @@ export class AccountStore {
 		}
 	}
 
+	requestLibraryRefresh(accountId: string): number {
+		if (!this.get(accountId)) {
+			throw new Error(`Account not found: ${accountId}`);
+		}
+		this.#db
+			.prepare(`
+        INSERT INTO library_refresh_requests (
+          account_id, requested_nonce, completed_nonce, last_error
+        ) VALUES (?, 1, 0, NULL)
+        ON CONFLICT(account_id) DO UPDATE SET
+          requested_nonce = requested_nonce + 1,
+          last_error = NULL
+      `)
+			.run(accountId);
+		return this.getLibraryRefreshState(accountId).requestedNonce;
+	}
+
+	getLibraryRefreshState(accountId: string): LibraryRefreshState {
+		const row = this.#db
+			.prepare(`
+        SELECT requested_nonce, completed_nonce, last_error
+        FROM library_refresh_requests
+        WHERE account_id = ?
+      `)
+			.get(accountId) as LibraryRefreshRow | undefined;
+		return row
+			? {
+					requestedNonce: row.requested_nonce,
+					completedNonce: row.completed_nonce,
+					lastError: row.last_error,
+				}
+			: { requestedNonce: 0, completedNonce: 0, lastError: null };
+	}
+
+	completeLibraryRefresh(
+		accountId: string,
+		requestedNonce: number,
+		lastError: string | null,
+	): void {
+		this.#db
+			.prepare(`
+        UPDATE library_refresh_requests
+        SET completed_nonce = ?, last_error = ?
+        WHERE account_id = ? AND completed_nonce < ?
+      `)
+			.run(requestedNonce, lastError, accountId, requestedNonce);
+	}
+
 	delete(id: string): void {
 		const result = this.#db
 			.prepare("DELETE FROM accounts WHERE id = ?")
@@ -427,6 +487,15 @@ export class AccountStore {
 			.run(ownerId);
 	}
 
+	hasActiveRunner(staleAfterMs = 30_000): boolean {
+		const row = this.#db
+			.prepare(
+				"SELECT heartbeat_at FROM runner_lease WHERE singleton = 1 AND heartbeat_at >= ?",
+			)
+			.get(Date.now() - staleAfterMs);
+		return row !== undefined;
+	}
+
 	#require(id: string): Account {
 		const account = this.get(id);
 		if (!account) {
@@ -446,7 +515,7 @@ export class AccountStore {
 			user_version: number;
 		};
 		const version = versionRow.user_version;
-		if (version > 5) {
+		if (version > 6) {
 			throw new Error(
 				`Database schema ${version} is newer than this version of Linger supports`,
 			);
@@ -520,6 +589,18 @@ export class AccountStore {
           CHECK (card_farming_enabled IN (0, 1));
         ALTER TABLE accounts ADD COLUMN card_farming_queue_json TEXT NOT NULL DEFAULT '[]';
         PRAGMA user_version = 5;
+      `);
+		}
+
+		if (version <= 5) {
+			this.#db.exec(`
+        CREATE TABLE library_refresh_requests (
+          account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+          requested_nonce INTEGER NOT NULL,
+          completed_nonce INTEGER NOT NULL,
+          last_error TEXT
+        );
+        PRAGMA user_version = 6;
       `);
 		}
 	}

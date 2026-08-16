@@ -113,9 +113,52 @@ describe("AccountStore", () => {
 		store.close();
 	});
 
+	it("coordinates game-library refresh requests with the runner", () => {
+		const store = createStore();
+		const account = store.create({
+			accountName: "library-refresh-test",
+			steamId: "76561198000000000",
+			refreshTokenEncrypted: "encrypted",
+			machineAuthTokenEncrypted: null,
+			appIds: [730],
+			customGame: null,
+			visible: true,
+			clearRecentActivity: false,
+			cardFarmingEnabled: false,
+			enabled: true,
+		});
+
+		assert.deepEqual(store.getLibraryRefreshState(account.id), {
+			requestedNonce: 0,
+			completedNonce: 0,
+			lastError: null,
+		});
+		const first = store.requestLibraryRefresh(account.id);
+		assert.equal(first, 1);
+		store.completeLibraryRefresh(account.id, first, "Steam unavailable");
+		assert.deepEqual(store.getLibraryRefreshState(account.id), {
+			requestedNonce: 1,
+			completedNonce: 1,
+			lastError: "Steam unavailable",
+		});
+
+		const second = store.requestLibraryRefresh(account.id);
+		assert.equal(second, 2);
+		assert.equal(store.getLibraryRefreshState(account.id).lastError, null);
+		store.completeLibraryRefresh(account.id, second, null);
+		assert.deepEqual(store.getLibraryRefreshState(account.id), {
+			requestedNonce: 2,
+			completedNonce: 2,
+			lastError: null,
+		});
+		store.close();
+	});
+
 	it("allows only one active runner lease", () => {
 		const store = createStore();
+		assert.equal(store.hasActiveRunner(), false);
 		assert.equal(store.claimRunner("runner-one"), true);
+		assert.equal(store.hasActiveRunner(), true);
 		assert.equal(store.claimRunner("runner-two"), false);
 		assert.doesNotThrow(() => store.heartbeatRunner("runner-one"));
 		store.releaseRunner("runner-one");

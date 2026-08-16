@@ -122,6 +122,7 @@ export class AccountWorker {
 	#webCookies: readonly string[] | null = null;
 	#gameExitWait: GameExitWait | null = null;
 	#earlyRetryProtectionUntil = 0;
+	#librarySyncGeneration: number | null = null;
 
 	constructor(
 		private readonly store: AccountStore,
@@ -176,6 +177,12 @@ export class AccountWorker {
 			this.#earlyRetryProtectionUntil = 0;
 		} else if (this.#client && presenceChanged(previous, next)) {
 			this.#applyPresence();
+		}
+		if (this.#client) {
+			const refresh = this.store.getLibraryRefreshState(next.id);
+			if (refresh.requestedNonce > refresh.completedNonce) {
+				void this.#syncLibrary(this.#generation, this.#client, next.id);
+			}
 		}
 
 		if (!this.#client && !this.#connecting) {
@@ -446,6 +453,11 @@ export class AccountWorker {
 		client: SteamUser,
 		accountId: string,
 	): Promise<void> {
+		if (this.#librarySyncGeneration === generation) {
+			return;
+		}
+		this.#librarySyncGeneration = generation;
+		const refresh = this.store.getLibraryRefreshState(accountId);
 		try {
 			const steamId = client.steamID?.getSteamID64();
 			if (!steamId) {
@@ -458,16 +470,31 @@ export class AccountWorker {
 				return;
 			}
 			this.store.replaceOwnedGames(accountId, games);
+			this.store.completeLibraryRefresh(
+				accountId,
+				refresh.requestedNonce,
+				null,
+			);
 			logger.debug("library", "Cached", {
 				account: this.#record.accountName,
 				games: games.length,
 			});
 		} catch (error) {
 			if (this.#isCurrent(generation, client)) {
+				const message = error instanceof Error ? error.message : String(error);
+				this.store.completeLibraryRefresh(
+					accountId,
+					refresh.requestedNonce,
+					message,
+				);
 				logger.warn("library", "Refresh failed; using existing cache", {
 					account: this.#record.accountName,
-					error: error instanceof Error ? error.message : String(error),
+					error: message,
 				});
+			}
+		} finally {
+			if (this.#librarySyncGeneration === generation) {
+				this.#librarySyncGeneration = null;
 			}
 		}
 	}

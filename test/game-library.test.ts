@@ -91,6 +91,28 @@ describe("game library", () => {
 		});
 	});
 
+	it("requests a library refresh while preserving picker state", async () => {
+		const { answer, events, getScreen } = await render(gamePicker, {
+			games: GAMES,
+			selectedAppIds: [20],
+			sort: "alphabetical",
+			maximumSelected: 3,
+			allowEmpty: false,
+			allowRefresh: true,
+			initialQuery: "bet",
+		});
+
+		assert.match(getScreen(), /r refresh library/u);
+		events.keypress("r");
+		assert.deepEqual(await answer, {
+			action: "refresh",
+			selectedAppIds: [20],
+			sort: "alphabetical",
+			query: "bet",
+			activeAppId: 20,
+		});
+	});
+
 	it("searches, toggles a result, and saves the combined selection", async () => {
 		const { answer, events, getScreen } = await render(gamePicker, {
 			games: GAMES,

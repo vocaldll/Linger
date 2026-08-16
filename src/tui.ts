@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { confirm, input, password, search, select } from "@inquirer/prompts";
 import qrcode from "qrcode-terminal";
 import type { CredentialVault } from "./crypto.js";
@@ -39,6 +40,9 @@ const STATUS_LABELS: Record<Account["status"], string> = {
 	needs_auth: "needs login",
 	error: "error",
 };
+
+const LIBRARY_REFRESH_TIMEOUT_MS = 30_000;
+const LIBRARY_REFRESH_POLL_INTERVAL_MS = 200;
 
 type SearchableAccount = Pick<Account, "accountName" | "steamId" | "status">;
 
@@ -174,25 +178,30 @@ async function promptGamePicker(
 	ownedGames: readonly OwnedGame[],
 	initialAppIds: readonly number[],
 	context: GameSelectionContext,
+	refreshLibrary?: () => Promise<OwnedGame[]>,
 ): Promise<number[] | null> {
+	let games = [...ownedGames];
 	let selectedAppIds = [...initialAppIds];
 	let sort: GameSort = "most_played";
 	let query = "";
 	let activeAppId: number | null = null;
 	let notice: string | undefined;
+	let errorNotice: string | undefined;
 	const maximumSelected = maximumSelectableAppIds(context);
 
 	while (true) {
 		const result = await gamePicker(
 			{
-				games: ownedGames,
+				games,
 				selectedAppIds,
 				sort,
 				maximumSelected,
 				allowEmpty: Boolean(context.customGame) || context.cardFarmingEnabled,
+				allowRefresh: refreshLibrary !== undefined,
 				initialQuery: query,
 				initialActiveAppId: activeAppId,
 				...(notice ? { notice } : {}),
+				...(errorNotice ? { errorNotice } : {}),
 			},
 			{ clearPromptOnDone: true },
 		);
@@ -200,6 +209,7 @@ async function promptGamePicker(
 		query = result.query;
 		activeAppId = result.activeAppId;
 		notice = undefined;
+		errorNotice = undefined;
 
 		if (result.action === "save") {
 			return selectedAppIds;
@@ -216,6 +226,16 @@ async function promptGamePicker(
 					Object.entries(GAME_SORT_LABELS) as Array<[GameSort, string]>
 				).map(([value, name]) => ({ name, value })),
 			});
+			continue;
+		}
+		if (result.action === "refresh" && refreshLibrary) {
+			pauseMessage("Refreshing Steam game library...");
+			try {
+				games = await refreshLibrary();
+				notice = `Library refreshed · ${games.length} game${games.length === 1 ? "" : "s"}`;
+			} catch (error) {
+				errorNotice = error instanceof Error ? error.message : String(error);
+			}
 			continue;
 		}
 
@@ -366,6 +386,39 @@ async function promptGameAppIds(
 		store.listOwnedGames(account.id),
 		account.appIds,
 		account,
+		() => refreshOwnedGames(store, account.id),
+	);
+}
+
+async function refreshOwnedGames(
+	store: AccountStore,
+	accountId: string,
+): Promise<OwnedGame[]> {
+	const account = store.get(accountId);
+	if (!account) {
+		throw new Error(`Account not found: ${accountId}`);
+	}
+	if (!store.hasActiveRunner()) {
+		throw new Error("Start the runner before refreshing the library.");
+	}
+	if (account.status !== "online") {
+		throw new Error("The Steam account must be online to refresh its library.");
+	}
+
+	const requestedNonce = store.requestLibraryRefresh(accountId);
+	const deadline = Date.now() + LIBRARY_REFRESH_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		const refresh = store.getLibraryRefreshState(accountId);
+		if (refresh.completedNonce >= requestedNonce) {
+			if (refresh.lastError) {
+				throw new Error(`Could not refresh the library: ${refresh.lastError}`);
+			}
+			return store.listOwnedGames(accountId);
+		}
+		await delay(LIBRARY_REFRESH_POLL_INTERVAL_MS);
+	}
+	throw new Error(
+		"The library refresh did not finish within 30 seconds. The existing cache is still available.",
 	);
 }
 
