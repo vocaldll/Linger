@@ -17,6 +17,7 @@ Linger is a terminal-based Steam hour booster and card farmer with multi-account
 - Automatically farm available trading-card drops
 - Reconnect disconnected accounts automatically
 - Configure online visibility per account
+- Send a configurable away message with a 30-minute per-sender cooldown
 - Display a custom game title
 - Clear recent Steam activity
 - Encrypt saved Steam session tokens with a local master key
