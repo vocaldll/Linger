@@ -63,6 +63,7 @@ Compose stores `linger.sqlite`, `master.key`, and `steam-device-id` in the `ling
 | `LINGER_MASTER_KEY` | Generated automatically | Encryption key with at least 32 characters |
 | `LINGER_MASTER_KEY_FILE` | — | Read the encryption key from a file; takes precedence over `LINGER_MASTER_KEY` |
 | `LINGER_RECONCILE_INTERVAL_MS` | `2000` | How often the runner checks for account changes |
+| `LINGER_LOG_LEVEL` | `info` | Minimum log level: `debug`, `info`, `warn`, or `error` |
 
 Back up the data directory or Docker volume as a unit. Deleting it removes Linger's configuration, and saved account tokens cannot be decrypted if the master key is lost.
 
