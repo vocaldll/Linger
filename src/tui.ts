@@ -184,9 +184,14 @@ async function promptGamePicker(
 	initialAppIds: readonly number[],
 	initialAutoStopTargets: readonly AutoStopTarget[],
 	context: GameSelectionContext,
-	refreshLibrary?: () => Promise<OwnedGame[]>,
+	initialTrackedPlaytimes: ReadonlyMap<number, number> = new Map(),
+	refreshLibrary?: () => Promise<{
+		games: OwnedGame[];
+		trackedPlaytimes: Map<number, number>;
+	}>,
 ): Promise<GameSelection | null> {
 	let games = [...ownedGames];
+	let trackedPlaytimes = new Map(initialTrackedPlaytimes);
 	let selectedAppIds = [...initialAppIds];
 	let autoStopTargets = [...initialAutoStopTargets];
 	let sort: GameSort = "most_played";
@@ -206,6 +211,7 @@ async function promptGamePicker(
 				maximumSelected,
 				allowEmpty: Boolean(context.customGame) || context.cardFarmingEnabled,
 				allowRefresh: refreshLibrary !== undefined,
+				trackedPlaytimes,
 				initialQuery: query,
 				initialActiveAppId: activeAppId,
 				...(notice ? { notice } : {}),
@@ -240,7 +246,9 @@ async function promptGamePicker(
 		if (result.action === "refresh" && refreshLibrary) {
 			pauseMessage("Refreshing Steam game library...");
 			try {
-				games = await refreshLibrary();
+				const refreshed = await refreshLibrary();
+				games = refreshed.games;
+				trackedPlaytimes = refreshed.trackedPlaytimes;
 				notice = `Library refreshed · ${games.length} game${games.length === 1 ? "" : "s"}`;
 			} catch (error) {
 				errorNotice = error instanceof Error ? error.message : String(error);
@@ -452,6 +460,7 @@ async function promptGameAppIds(
 		account.appIds,
 		account.autoStopTargets,
 		account,
+		store.listTrackedPlaytimes(account.id),
 		() => refreshOwnedGames(store, account.id),
 	);
 }
@@ -459,7 +468,10 @@ async function promptGameAppIds(
 async function refreshOwnedGames(
 	store: AccountStore,
 	accountId: string,
-): Promise<OwnedGame[]> {
+): Promise<{
+	games: OwnedGame[];
+	trackedPlaytimes: Map<number, number>;
+}> {
 	const account = store.get(accountId);
 	if (!account) {
 		throw new Error(`Account not found: ${accountId}`);
@@ -479,7 +491,10 @@ async function refreshOwnedGames(
 			if (refresh.lastError) {
 				throw new Error(`Could not refresh the library: ${refresh.lastError}`);
 			}
-			return store.listOwnedGames(accountId);
+			return {
+				games: store.listOwnedGames(accountId),
+				trackedPlaytimes: store.listTrackedPlaytimes(accountId),
+			};
 		}
 		await delay(LIBRARY_REFRESH_POLL_INTERVAL_MS);
 	}

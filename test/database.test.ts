@@ -121,6 +121,23 @@ describe("AccountStore", () => {
 		assert.deepEqual(store.listOwnedGames(account.id), [
 			{ appId: 570, name: "Dota 2", playtimeForever: 30 },
 		]);
+
+		store.replaceTrackedPlaytimes(
+			account.id,
+			new Map([
+				[7, 86_040],
+				[730, 87_541],
+			]),
+		);
+		assert.deepEqual(
+			[...store.listTrackedPlaytimes(account.id)].sort(
+				([left], [right]) => left - right,
+			),
+			[
+				[7, 86_040],
+				[730, 87_541],
+			],
+		);
 		store.close();
 	});
 
@@ -221,6 +238,7 @@ describe("AccountStore", () => {
 		assert.deepEqual(store.get("id")?.cardFarmingQueue, []);
 		assert.equal(store.get("id")?.awayMessage, null);
 		assert.deepEqual(store.get("id")?.autoStopTargets, []);
+		assert.deepEqual([...store.listTrackedPlaytimes("id")], []);
 		store.close();
 	});
 

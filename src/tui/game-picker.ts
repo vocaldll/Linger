@@ -43,6 +43,7 @@ type GamePickerConfig = {
 	allowRefresh?: boolean;
 	initialQuery?: string;
 	initialActiveAppId?: number | null;
+	trackedPlaytimes?: ReadonlyMap<number, number>;
 	notice?: string;
 	errorNotice?: string;
 	pageSize?: number;
@@ -55,26 +56,35 @@ type GamePickerContext = {
 	signal?: AbortSignal;
 };
 
-type PickerEntry = OwnedGame & { manuallyAdded: boolean };
+type PickerEntry = OwnedGame & {
+	manuallyAdded: boolean;
+	hasTrackedPlaytime: boolean;
+};
 
 export function buildPickerEntries(
 	games: readonly OwnedGame[],
 	selectedAppIds: readonly number[],
 	sort: GameSort,
 	query = "",
+	trackedPlaytimes: ReadonlyMap<number, number> = new Map(),
 ): PickerEntry[] {
 	const ownedIds = new Set(games.map((game) => game.appId));
 	const manuallyAdded = selectedAppIds
 		.filter((appId) => !ownedIds.has(appId))
-		.map((appId) => ({
-			appId,
-			name: `AppID ${appId}`,
-			playtimeForever: 0,
-			manuallyAdded: true,
-		}));
+		.map((appId) => {
+			const playtimeForever = trackedPlaytimes.get(appId);
+			return {
+				appId,
+				name: `AppID ${appId}`,
+				playtimeForever: playtimeForever ?? 0,
+				manuallyAdded: true,
+				hasTrackedPlaytime: playtimeForever !== undefined,
+			};
+		});
 	const owned = sortOwnedGames(games, sort).map((game) => ({
 		...game,
 		manuallyAdded: false,
+		hasTrackedPlaytime: true,
 	}));
 	return filterOwnedGames([...manuallyAdded, ...owned], query);
 }
@@ -107,6 +117,7 @@ export const gamePicker: (
 		selectedAppIds,
 		config.sort,
 		query,
+		config.trackedPlaytimes,
 	);
 	const initialActive = Math.max(
 		0,
@@ -232,7 +243,9 @@ export const gamePicker: (
 			const checkbox = checked ? ui.success("[●]") : ui.muted("[ ]");
 			const name = truncate(item.name, nameWidth).padEnd(nameWidth);
 			const playtimeDetail = item.manuallyAdded
-				? "manually added"
+				? item.hasTrackedPlaytime
+					? `${formatExactPlaytime(item.playtimeForever)} · manually added`
+					: "manually added"
 				: `${formatExactPlaytime(item.playtimeForever)} · AppID ${item.appId}`;
 			const targetDetail = autoStop
 				? `stop at ${Math.floor(autoStop.targetMinutes / 60).toLocaleString()}h`

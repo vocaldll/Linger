@@ -49,6 +49,11 @@ type OwnedGameRow = {
 	playtime_forever: number;
 };
 
+type TrackedPlaytimeRow = {
+	app_id: number;
+	playtime_forever: number;
+};
+
 export type LibraryRefreshState = {
 	requestedNonce: number;
 	completedNonce: number;
@@ -469,6 +474,51 @@ export class AccountStore {
 		}
 	}
 
+	listTrackedPlaytimes(accountId: string): Map<number, number> {
+		const rows = this.#db
+			.prepare(`
+        SELECT app_id, playtime_forever
+        FROM tracked_playtimes
+        WHERE account_id = ?
+      `)
+			.all(accountId) as TrackedPlaytimeRow[];
+		return new Map(rows.map((row) => [row.app_id, row.playtime_forever]));
+	}
+
+	replaceTrackedPlaytimes(
+		accountId: string,
+		playtimes: ReadonlyMap<number, number>,
+	): void {
+		if (!this.get(accountId)) {
+			throw new Error(`Account not found: ${accountId}`);
+		}
+		const normalized = [...playtimes].filter(
+			([appId, playtime]) =>
+				Number.isSafeInteger(appId) &&
+				appId > 0 &&
+				Number.isSafeInteger(playtime) &&
+				playtime >= 0,
+		);
+
+		this.#db.exec("BEGIN IMMEDIATE");
+		try {
+			this.#db
+				.prepare("DELETE FROM tracked_playtimes WHERE account_id = ?")
+				.run(accountId);
+			const insert = this.#db.prepare(`
+        INSERT INTO tracked_playtimes (account_id, app_id, playtime_forever)
+        VALUES (?, ?, ?)
+      `);
+			for (const [appId, playtime] of normalized) {
+				insert.run(accountId, appId, playtime);
+			}
+			this.#db.exec("COMMIT");
+		} catch (error) {
+			this.#db.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
 	requestLibraryRefresh(accountId: string): number {
 		if (!this.get(accountId)) {
 			throw new Error(`Account not found: ${accountId}`);
@@ -592,7 +642,7 @@ export class AccountStore {
 			user_version: number;
 		};
 		const version = versionRow.user_version;
-		if (version > 8) {
+		if (version > 9) {
 			throw new Error(
 				`Database schema ${version} is newer than this version of Linger supports`,
 			);
@@ -692,6 +742,20 @@ export class AccountStore {
 			this.#db.exec(`
         ALTER TABLE accounts ADD COLUMN auto_stop_targets_json TEXT NOT NULL DEFAULT '[]';
         PRAGMA user_version = 8;
+			`);
+		}
+
+		if (version <= 8) {
+			this.#db.exec(`
+        CREATE TABLE tracked_playtimes (
+          account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+          app_id INTEGER NOT NULL,
+          playtime_forever INTEGER NOT NULL CHECK (playtime_forever >= 0),
+          PRIMARY KEY (account_id, app_id)
+        );
+        INSERT INTO tracked_playtimes (account_id, app_id, playtime_forever)
+        SELECT account_id, app_id, playtime_forever FROM owned_games;
+        PRAGMA user_version = 9;
       `);
 		}
 	}

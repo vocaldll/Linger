@@ -11,6 +11,7 @@ import {
 } from "../src/domain/game-library.js";
 import {
 	getOwnedGamePlaytimes,
+	loadGameLibrary,
 	normalizeOwnedGames,
 } from "../src/steam/game-library.js";
 import { buildPickerEntries, gamePicker } from "../src/tui/game-picker.js";
@@ -58,6 +59,21 @@ describe("game library", () => {
 		);
 	});
 
+	it("shows cached tracked playtime as soon as an AppID is entered", () => {
+		const entries = buildPickerEntries(
+			GAMES,
+			[7],
+			"most_played",
+			"",
+			new Map([[7, 86_040]]),
+		);
+
+		assert.equal(entries[0]?.appId, 7);
+		assert.equal(entries[0]?.playtimeForever, 86_040);
+		assert.equal(entries[0]?.manuallyAdded, true);
+		assert.equal(entries[0]?.hasTrackedPlaytime, true);
+	});
+
 	it("normalizes Steam data and formats playtime", () => {
 		assert.deepEqual(
 			normalizeOwnedGames([
@@ -76,9 +92,14 @@ describe("game library", () => {
 
 	it("requests current playtime for only the targeted games", async () => {
 		let requestedAppIds: number[] | undefined;
+		let includedUnvettedApps = false;
 		const client = {
-			getUserOwnedApps(_steamId: string, options: { filterAppids?: number[] }) {
+			getUserOwnedApps(
+				_steamId: string,
+				options: { filterAppids?: number[]; skipUnvettedApps?: boolean },
+			) {
 				requestedAppIds = options.filterAppids;
+				includedUnvettedApps = options.skipUnvettedApps === false;
 				return Promise.resolve({
 					apps: [
 						{ appid: 730, playtime_forever: 466_619 },
@@ -94,8 +115,101 @@ describe("game library", () => {
 			[730, 440],
 		);
 		assert.deepEqual(requestedAppIds, [730, 440]);
+		assert.equal(includedUnvettedApps, true);
 		assert.equal(playtimes.get(730), 466_619);
 		assert.equal(playtimes.get(440), 120);
+	});
+
+	it("loads tracked playtime for a selected app outside the owned-games list", async () => {
+		let requestedMethod: string | undefined;
+		let ownedAppsOptions:
+			| {
+					includeFreeSub?: boolean;
+					skipUnvettedApps?: boolean;
+			  }
+			| undefined;
+		const client = {
+			getUserOwnedApps(
+				_steamId: string,
+				options: {
+					includeFreeSub?: boolean;
+					skipUnvettedApps?: boolean;
+				},
+			) {
+				ownedAppsOptions = options;
+				return Promise.resolve({
+					apps: [
+						{ appid: 440, name: "Team Fortress 2", playtime_forever: 120 },
+					],
+				});
+			},
+			_send(
+				header: { proto: { target_job_name: string } },
+				_request: Buffer,
+				callback: (
+					response: {
+						games: Array<{ appid: number; playtime_forever: number }>;
+					},
+					header: { proto: { eresult: number } },
+				) => void,
+			) {
+				requestedMethod = header.proto.target_job_name;
+				callback(
+					{
+						games: [
+							{ appid: 440, playtime_forever: 180 },
+							{ appid: 7, playtime_forever: 12_345 },
+						],
+					},
+					{ proto: { eresult: 1 } },
+				);
+			},
+		} as unknown as SteamUser;
+
+		const library = await loadGameLibrary(client, "76561198000000000", [7]);
+
+		assert.equal(requestedMethod, "Player.ClientGetLastPlayedTimes#1");
+		assert.equal(ownedAppsOptions?.includeFreeSub, true);
+		assert.equal(ownedAppsOptions?.skipUnvettedApps, false);
+		assert.equal(library.trackedPlaytimes?.get(7), 12_345);
+		assert.deepEqual(library.games, [
+			{ appId: 440, name: "Team Fortress 2", playtimeForever: 180 },
+			{ appId: 7, name: "AppID 7", playtimeForever: 12_345 },
+		]);
+	});
+
+	it("uses tracked playtime for hidden auto-stop targets", async () => {
+		let requestedOwnedApps = false;
+		const client = {
+			getUserOwnedApps() {
+				requestedOwnedApps = true;
+				return Promise.resolve({ apps: [] });
+			},
+			_send(
+				_header: { proto: { target_job_name: string } },
+				_request: Buffer,
+				callback: (
+					response: {
+						games: Array<{ appid: number; playtime_forever: number }>;
+					},
+					header: { proto: { eresult: number } },
+				) => void,
+			) {
+				callback(
+					{ games: [{ appid: 7, playtime_forever: 12_345 }] },
+					{ proto: { eresult: 1 } },
+				);
+			},
+		} as unknown as SteamUser;
+
+		const playtimes = await getOwnedGamePlaytimes(
+			client,
+			"76561198000000000",
+			[7],
+		);
+
+		assert.equal(playtimes.get(7), 12_345);
+		assert.equal(requestedOwnedApps, false);
 	});
 
 	it("renders most-played first and exposes manual entry without scrolling", async () => {
@@ -121,6 +235,22 @@ describe("game library", () => {
 			query: "",
 			activeAppId: 10,
 		});
+	});
+
+	it("renders cached hours for a manually entered AppID", async () => {
+		const { answer, events, getScreen } = await render(gamePicker, {
+			games: GAMES,
+			selectedAppIds: [7],
+			autoStopTargets: [],
+			sort: "most_played",
+			maximumSelected: 3,
+			allowEmpty: false,
+			trackedPlaytimes: new Map([[7, 86_040]]),
+		});
+
+		assert.match(getScreen(), /AppID 7\s+1\D434h · manually added/u);
+		events.keypress("escape");
+		assert.equal((await answer).action, "cancel");
 	});
 
 	it("requests a library refresh while preserving picker state", async () => {

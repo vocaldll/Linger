@@ -10,7 +10,7 @@ import {
 	SteamCommunityAuthenticationError,
 	SteamCommunityCardService,
 } from "./community-cards.js";
-import { getOwnedGamePlaytimes, getOwnedGames } from "./game-library.js";
+import { getOwnedGamePlaytimes, loadGameLibrary } from "./game-library.js";
 import type { SteamMachineIdentity } from "./machine-identity.js";
 import { PresenceController, type PresenceIntent } from "./presence.js";
 
@@ -149,10 +149,14 @@ function presenceChanged(previous: Account, next: Account): boolean {
 		previous.cardFarmingEnabled !== next.cardFarmingEnabled ||
 		previous.cardFarmingQueue[0]?.appId !== next.cardFarmingQueue[0]?.appId ||
 		previous.customGame !== next.customGame ||
-		JSON.stringify(previous.appIds) !== JSON.stringify(next.appIds) ||
+		configuredAppsChanged(previous, next) ||
 		JSON.stringify(previous.autoStopTargets) !==
 			JSON.stringify(next.autoStopTargets)
 	);
+}
+
+function configuredAppsChanged(previous: Account, next: Account): boolean {
+	return JSON.stringify(previous.appIds) !== JSON.stringify(next.appIds);
 }
 
 export class AccountWorker {
@@ -230,6 +234,9 @@ export class AccountWorker {
 			this.#applyPresence();
 		}
 		if (this.#client) {
+			if (configuredAppsChanged(previous, next)) {
+				this.store.requestLibraryRefresh(next.id);
+			}
 			const refresh = this.store.getLibraryRefreshState(next.id);
 			if (refresh.requestedNonce > refresh.completedNonce) {
 				void this.#syncLibrary(this.#generation, this.#client, next.id);
@@ -707,11 +714,18 @@ export class AccountWorker {
 					"Steam did not provide an account ID for library loading",
 				);
 			}
-			const games = await getOwnedGames(client, steamId);
+			const { games, trackedPlaytimes } = await loadGameLibrary(
+				client,
+				steamId,
+				this.#record.appIds,
+			);
 			if (!this.#isCurrent(generation, client)) {
 				return;
 			}
 			this.store.replaceOwnedGames(accountId, games);
+			if (trackedPlaytimes) {
+				this.store.replaceTrackedPlaytimes(accountId, trackedPlaytimes);
+			}
 			this.store.completeLibraryRefresh(
 				accountId,
 				refresh.requestedNonce,
