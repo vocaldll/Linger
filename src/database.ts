@@ -6,6 +6,7 @@ import type {
 	Account,
 	AccountConfiguration,
 	AccountStatus,
+	AutoStopTarget,
 	CardFarmingEntry,
 	NewAccount,
 	RuntimePatch,
@@ -13,6 +14,7 @@ import type {
 import {
 	hasNormalPresence,
 	validateAccountSetup,
+	validateAutoStopTargets,
 	validateCardFarmingQueue,
 } from "./domain/account.js";
 import type { OwnedGame } from "./domain/game-library.js";
@@ -24,6 +26,7 @@ type AccountRow = {
 	refresh_token_encrypted: string;
 	machine_auth_token_encrypted: string | null;
 	app_ids_json: string;
+	auto_stop_targets_json: string;
 	custom_game: string | null;
 	away_message: string | null;
 	visible: number;
@@ -60,7 +63,7 @@ type LibraryRefreshRow = {
 
 const ACCOUNT_COLUMNS = `
   id, account_name, steam_id, refresh_token_encrypted, machine_auth_token_encrypted,
-  app_ids_json, custom_game, away_message, visible, clear_recent_activity, card_farming_enabled,
+  app_ids_json, auto_stop_targets_json, custom_game, away_message, visible, clear_recent_activity, card_farming_enabled,
   card_farming_queue_json, enabled, revision, restart_nonce, status,
   last_error, last_connected_at, created_at, updated_at
 `;
@@ -86,14 +89,32 @@ function parseCardFarmingQueueJson(value: string): CardFarmingEntry[] {
 	return queue;
 }
 
+function parseAutoStopTargetsJson(
+	value: string,
+	appIds: readonly number[],
+): AutoStopTarget[] {
+	const parsed: unknown = JSON.parse(value);
+	if (!Array.isArray(parsed)) {
+		throw new Error("Stored account has invalid auto-stop targets");
+	}
+	const targets = parsed as AutoStopTarget[];
+	validateAutoStopTargets(targets, appIds);
+	return targets;
+}
+
 function mapAccount(row: AccountRow): Account {
+	const appIds = parseAppIdsJson(row.app_ids_json);
 	return {
 		id: row.id,
 		accountName: row.account_name,
 		steamId: row.steam_id,
 		refreshTokenEncrypted: row.refresh_token_encrypted,
 		machineAuthTokenEncrypted: row.machine_auth_token_encrypted,
-		appIds: parseAppIdsJson(row.app_ids_json),
+		appIds,
+		autoStopTargets: parseAutoStopTargetsJson(
+			row.auto_stop_targets_json,
+			appIds,
+		),
 		customGame: row.custom_game,
 		awayMessage: row.away_message,
 		visible: row.visible === 1,
@@ -160,10 +181,10 @@ export class AccountStore {
 			.prepare(`
         INSERT INTO accounts (
           id, account_name, steam_id, refresh_token_encrypted, machine_auth_token_encrypted,
-          app_ids_json, custom_game, visible, clear_recent_activity, card_farming_enabled,
+          app_ids_json, auto_stop_targets_json, custom_game, visible, clear_recent_activity, card_farming_enabled,
           card_farming_queue_json, enabled, revision, restart_nonce, status,
           last_error, last_connected_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, 1, 0, ?, NULL, NULL, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, 1, 0, ?, NULL, NULL, ?, ?)
       `)
 			.run(
 				id,
@@ -172,6 +193,7 @@ export class AccountStore {
 				input.refreshTokenEncrypted,
 				input.machineAuthTokenEncrypted,
 				JSON.stringify(input.appIds),
+				JSON.stringify(input.autoStopTargets),
 				input.customGame?.trim() || null,
 				input.visible ? 1 : 0,
 				input.clearRecentActivity ? 1 : 0,
@@ -196,15 +218,56 @@ export class AccountStore {
 		const result = this.#db
 			.prepare(`
         UPDATE accounts
-        SET app_ids_json = ?, custom_game = ?, visible = ?, clear_recent_activity = ?,
+        SET app_ids_json = ?, auto_stop_targets_json = ?, custom_game = ?, visible = ?, clear_recent_activity = ?,
             revision = revision + 1, updated_at = ?
         WHERE id = ?
       `)
 			.run(
 				JSON.stringify(configuration.appIds),
+				JSON.stringify(configuration.autoStopTargets),
 				configuration.customGame?.trim() || null,
 				configuration.visible ? 1 : 0,
 				configuration.clearRecentActivity ? 1 : 0,
+				new Date().toISOString(),
+				id,
+			);
+		this.#assertChanged(result.changes, id);
+		return this.#require(id);
+	}
+
+	completeAutoStop(id: string, appId: number): Account {
+		const account = this.#require(id);
+		const target = account.autoStopTargets.find(
+			(candidate) => candidate.appId === appId,
+		);
+		if (!target) {
+			return account;
+		}
+		const appIds = account.appIds.filter((candidate) => candidate !== appId);
+		const autoStopTargets = account.autoStopTargets.filter(
+			(candidate) => candidate.appId !== appId,
+		);
+		const keepEnabled =
+			account.enabled &&
+			(account.cardFarmingEnabled ||
+				appIds.length > 0 ||
+				Boolean(account.customGame?.trim()));
+		const result = this.#db
+			.prepare(`
+        UPDATE accounts
+        SET app_ids_json = ?, auto_stop_targets_json = ?, enabled = ?, status = ?, last_error = NULL,
+            revision = revision + 1, updated_at = ?
+        WHERE id = ?
+      `)
+			.run(
+				JSON.stringify(appIds),
+				JSON.stringify(autoStopTargets),
+				keepEnabled ? 1 : 0,
+				keepEnabled
+					? account.status === "online"
+						? "online"
+						: "idle"
+					: "disabled",
 				new Date().toISOString(),
 				id,
 			);
@@ -529,7 +592,7 @@ export class AccountStore {
 			user_version: number;
 		};
 		const version = versionRow.user_version;
-		if (version > 7) {
+		if (version > 8) {
 			throw new Error(
 				`Database schema ${version} is newer than this version of Linger supports`,
 			);
@@ -622,6 +685,13 @@ export class AccountStore {
 			this.#db.exec(`
         ALTER TABLE accounts ADD COLUMN away_message TEXT;
         PRAGMA user_version = 7;
+      `);
+		}
+
+		if (version <= 7) {
+			this.#db.exec(`
+        ALTER TABLE accounts ADD COLUMN auto_stop_targets_json TEXT NOT NULL DEFAULT '[]';
+        PRAGMA user_version = 8;
       `);
 		}
 	}

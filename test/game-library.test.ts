@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { render } from "@inquirer/testing";
+import type SteamUser from "steam-user";
 import {
 	filterOwnedGames,
+	formatExactPlaytime,
 	formatPlaytime,
 	type OwnedGame,
 	sortOwnedGames,
 } from "../src/domain/game-library.js";
-import { normalizeOwnedGames } from "../src/steam/game-library.js";
+import {
+	getOwnedGamePlaytimes,
+	normalizeOwnedGames,
+} from "../src/steam/game-library.js";
 import { buildPickerEntries, gamePicker } from "../src/tui/game-picker.js";
 
 const GAMES: OwnedGame[] = [
@@ -66,12 +71,38 @@ describe("game library", () => {
 		assert.equal(formatPlaytime(30), "30m");
 		assert.equal(formatPlaytime(95), "1.6h");
 		assert.equal(formatPlaytime(600), "10h");
+		assert.match(formatExactPlaytime(466_619), /7\D776h 59m/u);
+	});
+
+	it("requests current playtime for only the targeted games", async () => {
+		let requestedAppIds: number[] | undefined;
+		const client = {
+			getUserOwnedApps(_steamId: string, options: { filterAppids?: number[] }) {
+				requestedAppIds = options.filterAppids;
+				return Promise.resolve({
+					apps: [
+						{ appid: 730, playtime_forever: 466_619 },
+						{ appid: 440, playtime_forever: 120 },
+					],
+				});
+			},
+		} as unknown as SteamUser;
+
+		const playtimes = await getOwnedGamePlaytimes(
+			client,
+			"76561198000000000",
+			[730, 440],
+		);
+		assert.deepEqual(requestedAppIds, [730, 440]);
+		assert.equal(playtimes.get(730), 466_619);
+		assert.equal(playtimes.get(440), 120);
 	});
 
 	it("renders most-played first and exposes manual entry without scrolling", async () => {
 		const { answer, events, getScreen } = await render(gamePicker, {
 			games: GAMES,
 			selectedAppIds: [20],
+			autoStopTargets: [],
 			sort: "most_played",
 			maximumSelected: 3,
 			allowEmpty: false,
@@ -85,6 +116,7 @@ describe("game library", () => {
 		assert.deepEqual(await answer, {
 			action: "manual",
 			selectedAppIds: [20],
+			autoStopTargets: [],
 			sort: "most_played",
 			query: "",
 			activeAppId: 10,
@@ -95,6 +127,7 @@ describe("game library", () => {
 		const { answer, events, getScreen } = await render(gamePicker, {
 			games: GAMES,
 			selectedAppIds: [20],
+			autoStopTargets: [],
 			sort: "alphabetical",
 			maximumSelected: 3,
 			allowEmpty: false,
@@ -107,16 +140,57 @@ describe("game library", () => {
 		assert.deepEqual(await answer, {
 			action: "refresh",
 			selectedAppIds: [20],
+			autoStopTargets: [],
 			sort: "alphabetical",
 			query: "bet",
 			activeAppId: 20,
 		});
 	});
 
+	it("opens auto-stop editing for the highlighted selected game", async () => {
+		const { answer, events, getScreen } = await render(gamePicker, {
+			games: GAMES,
+			selectedAppIds: [10],
+			autoStopTargets: [{ appId: 10, targetMinutes: 7_777 * 60 }],
+			sort: "most_played",
+			maximumSelected: 3,
+			allowEmpty: false,
+		});
+
+		assert.match(getScreen(), /stop at 7\D777h/iu);
+		events.keypress("a");
+		assert.deepEqual(await answer, {
+			action: "autoStop",
+			selectedAppIds: [10],
+			autoStopTargets: [{ appId: 10, targetMinutes: 7_777 * 60 }],
+			sort: "most_played",
+			query: "",
+			activeAppId: 10,
+		});
+	});
+
+	it("clears a target when its game is deselected", async () => {
+		const { answer, events } = await render(gamePicker, {
+			games: GAMES,
+			selectedAppIds: [10],
+			autoStopTargets: [{ appId: 10, targetMinutes: 7_777 * 60 }],
+			sort: "most_played",
+			maximumSelected: 3,
+			allowEmpty: true,
+		});
+
+		events.keypress("space");
+		events.keypress("enter");
+		const result = await answer;
+		assert.deepEqual(result.selectedAppIds, []);
+		assert.deepEqual(result.autoStopTargets, []);
+	});
+
 	it("searches, toggles a result, and saves the combined selection", async () => {
 		const { answer, events, getScreen } = await render(gamePicker, {
 			games: GAMES,
 			selectedAppIds: [10],
+			autoStopTargets: [],
 			sort: "most_played",
 			maximumSelected: 3,
 			allowEmpty: false,
@@ -133,6 +207,7 @@ describe("game library", () => {
 		assert.deepEqual(await answer, {
 			action: "save",
 			selectedAppIds: [10, 30],
+			autoStopTargets: [],
 			sort: "most_played",
 			query: "gam",
 			activeAppId: 30,
@@ -143,6 +218,7 @@ describe("game library", () => {
 		const { answer, events, getScreen } = await render(gamePicker, {
 			games: GAMES,
 			selectedAppIds: [10, 20],
+			autoStopTargets: [],
 			sort: "most_played",
 			maximumSelected: 2,
 			allowEmpty: false,
@@ -160,6 +236,7 @@ describe("game library", () => {
 		const { answer, events } = await render(gamePicker, {
 			games: GAMES,
 			selectedAppIds: [20],
+			autoStopTargets: [],
 			sort: "most_played",
 			maximumSelected: 3,
 			allowEmpty: false,
@@ -174,6 +251,7 @@ describe("game library", () => {
 		const firstPicker = await render(gamePicker, {
 			games: GAMES,
 			selectedAppIds: [20],
+			autoStopTargets: [],
 			sort: "most_played",
 			maximumSelected: 3,
 			allowEmpty: false,
@@ -187,6 +265,7 @@ describe("game library", () => {
 		const sortedPicker = await render(gamePicker, {
 			games: GAMES,
 			selectedAppIds: sortRequest.selectedAppIds,
+			autoStopTargets: sortRequest.autoStopTargets,
 			sort: "least_played",
 			maximumSelected: 3,
 			allowEmpty: false,

@@ -1,7 +1,7 @@
 import SteamUser from "steam-user";
 import type { CredentialVault } from "../crypto.js";
 import type { AccountStore } from "../database.js";
-import type { Account } from "../domain/account.js";
+import type { Account, AutoStopTarget } from "../domain/account.js";
 import { logger } from "../logger.js";
 import { CardFarmingController } from "./card-farming.js";
 import {
@@ -10,9 +10,9 @@ import {
 	SteamCommunityAuthenticationError,
 	SteamCommunityCardService,
 } from "./community-cards.js";
-import { getOwnedGames } from "./game-library.js";
+import { getOwnedGamePlaytimes, getOwnedGames } from "./game-library.js";
 import type { SteamMachineIdentity } from "./machine-identity.js";
-import { PresenceController } from "./presence.js";
+import { PresenceController, type PresenceIntent } from "./presence.js";
 
 const INITIAL_RETRY_MS = 5_000;
 const MAX_RETRY_MS = 5 * 60 * 1_000;
@@ -21,6 +21,27 @@ const PROFILE_STATUS_POLL_INTERVAL_MS = 30_000;
 const PROFILE_STATUS_CONFIRMATIONS_REQUIRED = 2;
 const EARLY_RETRY_STABILITY_MS = 30_000;
 export const AWAY_MESSAGE_COOLDOWN_MS = 30 * 60 * 1_000;
+export const MAX_AUTO_STOP_TIMER_MS = 24 * 60 * 60 * 1_000;
+const AUTO_STOP_RETRY_MS = 2 * 60 * 1_000;
+
+export function calculateAutoStopCheckDelay(
+	targets: readonly AutoStopTarget[],
+	playtimes: ReadonlyMap<number, number>,
+	activeDurationMs: number,
+	maximumDelayMs = MAX_AUTO_STOP_TIMER_MS,
+): number {
+	return Math.max(
+		0,
+		Math.min(
+			...targets.map(
+				(target) =>
+					(target.targetMinutes - (playtimes.get(target.appId) ?? 0)) * 60_000 -
+					activeDurationMs,
+			),
+			maximumDelayMs,
+		),
+	);
+}
 
 type SteamUserWithMachineTokenEvent = SteamUser & {
 	on(event: "machineAuthToken", listener: (token: string) => void): SteamUser;
@@ -128,7 +149,9 @@ function presenceChanged(previous: Account, next: Account): boolean {
 		previous.cardFarmingEnabled !== next.cardFarmingEnabled ||
 		previous.cardFarmingQueue[0]?.appId !== next.cardFarmingQueue[0]?.appId ||
 		previous.customGame !== next.customGame ||
-		JSON.stringify(previous.appIds) !== JSON.stringify(next.appIds)
+		JSON.stringify(previous.appIds) !== JSON.stringify(next.appIds) ||
+		JSON.stringify(previous.autoStopTargets) !==
+			JSON.stringify(next.autoStopTargets)
 	);
 }
 
@@ -147,6 +170,8 @@ export class AccountWorker {
 	#gameExitWait: GameExitWait | null = null;
 	#earlyRetryProtectionUntil = 0;
 	#librarySyncGeneration: number | null = null;
+	#presenceOperation = 0;
+	#autoStopTimer: NodeJS.Timeout | null = null;
 	readonly #awayMessageCooldown = new AwayMessageCooldown();
 
 	constructor(
@@ -440,73 +465,228 @@ export class AccountWorker {
 
 	#applyPresence(): void {
 		const presence = this.#presence;
-		if (!presence) {
+		const client = this.#client;
+		if (!presence || !client) {
 			return;
 		}
+		this.#cancelAutoStopTimer();
+		const operation = ++this.#presenceOperation;
+		void this.#applyPresenceOperation(operation, presence, client);
+	}
+
+	async #applyPresenceOperation(
+		operation: number,
+		presence: PresenceController,
+		client: SteamUser,
+	): Promise<void> {
 		const snapshot = this.#record;
-		const intent =
-			!snapshot.enabled || snapshot.cardFarmingEnabled
-				? {
-						mode: "farm" as const,
-						appId: snapshot.enabled
-							? (snapshot.cardFarmingQueue[0]?.appId ?? null)
-							: null,
-						visible: snapshot.visible,
-					}
-				: { mode: "boost" as const, configuration: snapshot };
-		void presence.apply(intent).then(
-			(applied) => {
-				if (!applied || presence !== this.#presence) {
-					return;
+		if (
+			!snapshot.enabled ||
+			snapshot.cardFarmingEnabled ||
+			snapshot.autoStopTargets.length === 0
+		) {
+			try {
+				const applied = await presence.apply(this.#presenceIntent(snapshot));
+				this.#finishPresenceApplication(presence, snapshot, applied);
+			} catch (error) {
+				if (this.#isPresenceOperationCurrent(operation, presence, client)) {
+					logger.error("presence", "Could not apply", {
+						account: snapshot.accountName,
+						error: error instanceof Error ? error.message : String(error),
+					});
 				}
-				if (!snapshot.enabled) {
-					this.#appliedPresenceMode = null;
-					return;
+			}
+			return;
+		}
+		try {
+			const targetedAppIds = new Set(
+				snapshot.autoStopTargets.map((target) => target.appId),
+			);
+			const untargetedAppIds = snapshot.appIds.filter(
+				(appId) => !targetedAppIds.has(appId),
+			);
+			await presence.apply(this.#normalBoostIntent(snapshot, untargetedAppIds));
+			if (!this.#isPresenceOperationCurrent(operation, presence, client)) {
+				return;
+			}
+
+			const steamId = client.steamID?.getSteamID64();
+			if (!steamId) {
+				throw new Error("Steam did not provide an account ID for auto-stop");
+			}
+			const playtimes = await getOwnedGamePlaytimes(
+				client,
+				steamId,
+				snapshot.autoStopTargets.map((target) => target.appId),
+			);
+			if (!this.#isPresenceOperationCurrent(operation, presence, client)) {
+				return;
+			}
+
+			const missingAppId = snapshot.autoStopTargets.find(
+				(target) => !playtimes.has(target.appId),
+			)?.appId;
+			if (missingAppId !== undefined) {
+				throw new Error(
+					`Steam did not return playtime for AppID ${missingAppId}`,
+				);
+			}
+
+			const reached = snapshot.autoStopTargets.filter(
+				(target) => (playtimes.get(target.appId) ?? 0) >= target.targetMinutes,
+			);
+			if (reached.length > 0) {
+				for (const target of reached) {
+					this.#record = this.store.completeAutoStop(
+						this.#record.id,
+						target.appId,
+					);
+					logger.info("presence", "Auto-stop target reached", {
+						account: this.#record.accountName,
+						app: target.appId,
+						targetHours: target.targetMinutes / 60,
+					});
 				}
-				const mode: AppliedPresenceMode = snapshot.cardFarmingEnabled
-					? "card-farming"
-					: "hour-boosting";
-				if (mode === "card-farming" && !snapshot.cardFarmingQueue[0]) {
-					if (this.#appliedPresenceMode === "hour-boosting") {
-						this.#stopHourBoosting("card-farming");
-					}
-					return;
+				this.#applyPresence();
+				return;
+			}
+
+			const boostingStartedAt = Date.now();
+			const applied = await presence.apply({
+				mode: "boost",
+				configuration: snapshot,
+			});
+			if (!this.#isPresenceOperationCurrent(operation, presence, client)) {
+				return;
+			}
+			this.#finishPresenceApplication(presence, snapshot, applied);
+			if (!applied) {
+				return;
+			}
+			const nextCheckMs = calculateAutoStopCheckDelay(
+				snapshot.autoStopTargets,
+				playtimes,
+				Date.now() - boostingStartedAt,
+			);
+			this.#scheduleAutoStopCheck(operation, presence, client, nextCheckMs);
+		} catch (error) {
+			if (!this.#isPresenceOperationCurrent(operation, presence, client)) {
+				return;
+			}
+			logger.warn("presence", "Auto-stop playtime check failed", {
+				account: snapshot.accountName,
+				error: error instanceof Error ? error.message : String(error),
+				retry: "2m",
+			});
+			this.#scheduleAutoStopCheck(
+				operation,
+				presence,
+				client,
+				AUTO_STOP_RETRY_MS,
+			);
+		}
+	}
+
+	#presenceIntent(account: Account): PresenceIntent {
+		return !account.enabled || account.cardFarmingEnabled
+			? {
+					mode: "farm",
+					appId: account.enabled
+						? (account.cardFarmingQueue[0]?.appId ?? null)
+						: null,
+					visible: account.visible,
 				}
-				const fields = snapshot.cardFarmingEnabled
-					? {
-							account: snapshot.accountName,
-							visibility: snapshot.visible ? "online" : "invisible",
-						}
-					: {
-							account: snapshot.accountName,
-							games: snapshot.appIds.length,
-							...(snapshot.customGame
-								? { customGame: snapshot.customGame }
-								: {}),
-							visibility: snapshot.visible ? "online" : "invisible",
-							...(snapshot.clearRecentActivity
-								? { clearRecentActivity: true }
-								: {}),
-						};
-				if (
-					this.#appliedPresenceMode === "hour-boosting" &&
-					mode === "card-farming"
-				) {
-					this.#stopHourBoosting("card-farming");
-				}
-				const label =
-					mode === "card-farming" ? "Card farming" : "Hour boosting";
-				const action =
-					this.#appliedPresenceMode === mode ? "updated" : "started";
-				logger.info("presence", `${label} ${action}`, fields);
-				this.#appliedPresenceMode = mode;
-			},
-			(error: unknown) => {
-				logger.error("presence", "Could not apply", {
+			: { mode: "boost", configuration: account };
+	}
+
+	#normalBoostIntent(account: Account, appIds: number[]): PresenceIntent {
+		if (appIds.length === 0 && !account.customGame?.trim()) {
+			return { mode: "farm", appId: null, visible: account.visible };
+		}
+		return {
+			mode: "boost",
+			configuration: { ...account, appIds, autoStopTargets: [] },
+		};
+	}
+
+	#finishPresenceApplication(
+		presence: PresenceController,
+		snapshot: Account,
+		applied: boolean,
+	): void {
+		if (!applied || presence !== this.#presence) {
+			return;
+		}
+		if (!snapshot.enabled) {
+			this.#appliedPresenceMode = null;
+			return;
+		}
+		const mode: AppliedPresenceMode = snapshot.cardFarmingEnabled
+			? "card-farming"
+			: "hour-boosting";
+		if (mode === "card-farming" && !snapshot.cardFarmingQueue[0]) {
+			if (this.#appliedPresenceMode === "hour-boosting") {
+				this.#stopHourBoosting("card-farming");
+			}
+			return;
+		}
+		const fields = snapshot.cardFarmingEnabled
+			? {
 					account: snapshot.accountName,
-					error: error instanceof Error ? error.message : String(error),
-				});
-			},
+					visibility: snapshot.visible ? "online" : "invisible",
+				}
+			: {
+					account: snapshot.accountName,
+					games: snapshot.appIds.length,
+					...(snapshot.customGame ? { customGame: snapshot.customGame } : {}),
+					visibility: snapshot.visible ? "online" : "invisible",
+					...(snapshot.clearRecentActivity
+						? { clearRecentActivity: true }
+						: {}),
+				};
+		if (
+			this.#appliedPresenceMode === "hour-boosting" &&
+			mode === "card-farming"
+		) {
+			this.#stopHourBoosting("card-farming");
+		}
+		const label = mode === "card-farming" ? "Card farming" : "Hour boosting";
+		const action = this.#appliedPresenceMode === mode ? "updated" : "started";
+		logger.info("presence", `${label} ${action}`, fields);
+		this.#appliedPresenceMode = mode;
+	}
+
+	#scheduleAutoStopCheck(
+		operation: number,
+		presence: PresenceController,
+		client: SteamUser,
+		delayMs: number,
+	): void {
+		this.#cancelAutoStopTimer();
+		this.#autoStopTimer = setTimeout(() => {
+			this.#autoStopTimer = null;
+			if (this.#isPresenceOperationCurrent(operation, presence, client)) {
+				this.#applyPresence();
+			}
+		}, delayMs);
+	}
+
+	#cancelAutoStopTimer(): void {
+		if (this.#autoStopTimer) {
+			clearTimeout(this.#autoStopTimer);
+			this.#autoStopTimer = null;
+		}
+	}
+
+	#isPresenceOperationCurrent(
+		operation: number,
+		presence: PresenceController,
+		client: SteamUser,
+	): boolean {
+		return (
+			operation === this.#presenceOperation &&
+			presence === this.#presence &&
+			client === this.#client
 		);
 	}
 
@@ -696,6 +876,8 @@ export class AccountWorker {
 	#disconnect(preserveWebSession = false): void {
 		const client = this.#client;
 		this.#generation += 1;
+		this.#presenceOperation += 1;
+		this.#cancelAutoStopTimer();
 		this.#client = null;
 		this.#presence?.dispose();
 		this.#presence = null;

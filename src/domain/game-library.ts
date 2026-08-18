@@ -67,3 +67,17 @@ export function formatPlaytime(minutes: number): string {
 		? `${hours.toFixed(1)}h`
 		: `${Math.round(hours)}h`;
 }
+
+export function formatExactPlaytime(minutes: number): string {
+	if (minutes <= 0) {
+		return "Never played";
+	}
+	const hours = Math.floor(minutes / 60);
+	const remainingMinutes = minutes % 60;
+	if (hours === 0) {
+		return `${remainingMinutes}m`;
+	}
+	return remainingMinutes === 0
+		? `${hours.toLocaleString()}h`
+		: `${hours.toLocaleString()}h ${remainingMinutes}m`;
+}

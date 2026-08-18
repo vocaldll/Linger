@@ -33,6 +33,7 @@ function createAccount(store: AccountStore, appIds: number[]): Account {
 		refreshTokenEncrypted: "encrypted",
 		machineAuthTokenEncrypted: null,
 		appIds,
+		autoStopTargets: [],
 		customGame: null,
 		visible: false,
 		clearRecentActivity: false,

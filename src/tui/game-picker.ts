@@ -13,9 +13,10 @@ import {
 	usePrefix,
 	useState,
 } from "@inquirer/core";
+import type { AutoStopTarget } from "../domain/account.js";
 import {
 	filterOwnedGames,
-	formatPlaytime,
+	formatExactPlaytime,
 	GAME_SORT_LABELS,
 	type GameSort,
 	type OwnedGame,
@@ -24,8 +25,9 @@ import {
 import { LINGER_THEME, ui } from "./theme.js";
 
 export type GamePickerResult = {
-	action: "save" | "cancel" | "manual" | "refresh" | "sort";
+	action: "save" | "cancel" | "manual" | "refresh" | "sort" | "autoStop";
 	selectedAppIds: number[];
+	autoStopTargets: AutoStopTarget[];
 	sort: GameSort;
 	query: string;
 	activeAppId: number | null;
@@ -34,6 +36,7 @@ export type GamePickerResult = {
 type GamePickerConfig = {
 	games: readonly OwnedGame[];
 	selectedAppIds: readonly number[];
+	autoStopTargets: readonly AutoStopTarget[];
 	sort: GameSort;
 	maximumSelected: number;
 	allowEmpty: boolean;
@@ -93,6 +96,9 @@ export const gamePicker: (
 	const [selectedAppIds, setSelectedAppIds] = useState([
 		...config.selectedAppIds,
 	]);
+	const [autoStopTargets, setAutoStopTargets] = useState([
+		...config.autoStopTargets,
+	]);
 	const [query, setQuery] = useState(config.initialQuery ?? "");
 	const [searching, setSearching] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -114,6 +120,7 @@ export const gamePicker: (
 		const result: GamePickerResult = {
 			action,
 			selectedAppIds,
+			autoStopTargets,
 			sort: config.sort,
 			query,
 			activeAppId:
@@ -163,6 +170,9 @@ export const gamePicker: (
 				setSelectedAppIds(
 					selectedAppIds.filter((selected) => selected !== appId),
 				);
+				setAutoStopTargets(
+					autoStopTargets.filter((target) => target.appId !== appId),
+				);
 				setError(null);
 			} else if (selectedAppIds.length >= config.maximumSelected) {
 				setError(
@@ -171,6 +181,13 @@ export const gamePicker: (
 			} else {
 				setSelectedAppIds([...selectedAppIds, appId]);
 				setError(null);
+			}
+		} else if (key.name === "a" && entries.length > 0) {
+			const appId = entries[activeIndex]?.appId;
+			if (appId !== undefined && selectedAppIds.includes(appId)) {
+				complete("autoStop");
+			} else {
+				setError("Select the game before setting an auto-stop target");
 			}
 		} else if (pressed.sequence === "/" || key.name === "/") {
 			setSearching(true);
@@ -208,12 +225,21 @@ export const gamePicker: (
 		loop: false,
 		renderItem({ item, isActive }) {
 			const checked = selectedAppIds.includes(item.appId);
+			const autoStop = autoStopTargets.find(
+				(target) => target.appId === item.appId,
+			);
 			const cursor = isActive ? ui.accentStrong("›") : " ";
 			const checkbox = checked ? ui.success("[●]") : ui.muted("[ ]");
 			const name = truncate(item.name, nameWidth).padEnd(nameWidth);
-			const detail = item.manuallyAdded
+			const playtimeDetail = item.manuallyAdded
 				? "manually added"
-				: `${formatPlaytime(item.playtimeForever)} · AppID ${item.appId}`;
+				: `${formatExactPlaytime(item.playtimeForever)} · AppID ${item.appId}`;
+			const targetDetail = autoStop
+				? `stop at ${Math.floor(autoStop.targetMinutes / 60).toLocaleString()}h`
+				: null;
+			const detail = targetDetail
+				? `${playtimeDetail} · ${targetDetail}`
+				: playtimeDetail;
 			const row = `${cursor} ${checkbox} ${name} ${ui.muted(detail)}`;
 			return isActive ? ui.accentStrong(row) : row;
 		},
@@ -248,6 +274,7 @@ export const gamePicker: (
 					? [`${ui.key("r")} ${ui.muted("refresh library")}`]
 					: []),
 				`${ui.key("m")} ${ui.muted("enter AppIDs")}`,
+				`${ui.key("a")} ${ui.muted("auto-stop")}`,
 				`${ui.key("enter")} ${ui.muted("save")}`,
 				`${ui.key("esc")} ${ui.muted("clear/cancel")}`,
 			].join(ui.muted(" · "));

@@ -7,6 +7,7 @@ import type {
 	Account,
 	AccountConfiguration,
 	AccountSetup,
+	AutoStopTarget,
 } from "./domain/account.js";
 import {
 	MAX_CUSTOM_GAME_LENGTH,
@@ -16,6 +17,7 @@ import {
 	validateAccountSetup,
 } from "./domain/account.js";
 import {
+	formatExactPlaytime,
 	GAME_SORT_LABELS,
 	type GameSort,
 	type OwnedGame,
@@ -167,6 +169,8 @@ type GameSelectionContext = Pick<
 	"customGame" | "clearRecentActivity" | "cardFarmingEnabled"
 >;
 
+type GameSelection = Pick<AccountConfiguration, "appIds" | "autoStopTargets">;
+
 function maximumSelectableAppIds(context: GameSelectionContext): number {
 	return (
 		MAX_GAMES_PLAYED -
@@ -178,11 +182,13 @@ function maximumSelectableAppIds(context: GameSelectionContext): number {
 async function promptGamePicker(
 	ownedGames: readonly OwnedGame[],
 	initialAppIds: readonly number[],
+	initialAutoStopTargets: readonly AutoStopTarget[],
 	context: GameSelectionContext,
 	refreshLibrary?: () => Promise<OwnedGame[]>,
-): Promise<number[] | null> {
+): Promise<GameSelection | null> {
 	let games = [...ownedGames];
 	let selectedAppIds = [...initialAppIds];
+	let autoStopTargets = [...initialAutoStopTargets];
 	let sort: GameSort = "most_played";
 	let query = "";
 	let activeAppId: number | null = null;
@@ -195,6 +201,7 @@ async function promptGamePicker(
 			{
 				games,
 				selectedAppIds,
+				autoStopTargets,
 				sort,
 				maximumSelected,
 				allowEmpty: Boolean(context.customGame) || context.cardFarmingEnabled,
@@ -207,13 +214,14 @@ async function promptGamePicker(
 			{ clearPromptOnDone: true },
 		);
 		selectedAppIds = result.selectedAppIds;
+		autoStopTargets = result.autoStopTargets;
 		query = result.query;
 		activeAppId = result.activeAppId;
 		notice = undefined;
 		errorNotice = undefined;
 
 		if (result.action === "save") {
-			return selectedAppIds;
+			return { appIds: selectedAppIds, autoStopTargets };
 		}
 		if (result.action === "cancel") {
 			return null;
@@ -239,6 +247,55 @@ async function promptGamePicker(
 			}
 			continue;
 		}
+		if (result.action === "autoStop" && activeAppId !== null) {
+			const existing = autoStopTargets.find(
+				(target) => target.appId === activeAppId,
+			);
+			const game = games.find((candidate) => candidate.appId === activeAppId);
+			const value = await input({
+				message: existing
+					? `Stop AppID ${activeAppId} at total hours (currently ${existing.targetMinutes / 60}h; blank keeps, "-" clears)`
+					: `Stop AppID ${activeAppId} at total hours (blank cancels)`,
+				theme: LINGER_THEME,
+				validate(candidate) {
+					const trimmed = candidate.trim();
+					if (!trimmed || (trimmed === "-" && existing)) {
+						return true;
+					}
+					if (!/^\d+$/u.test(trimmed)) {
+						return "Enter a whole number of hours";
+					}
+					const hours = Number(trimmed);
+					const targetMinutes = hours * 60;
+					if (!Number.isSafeInteger(targetMinutes) || targetMinutes <= 0) {
+						return "Enter a positive whole number of hours";
+					}
+					if (game && targetMinutes <= game.playtimeForever) {
+						return `Target must be above the cached playtime (${formatExactPlaytime(game.playtimeForever)})`;
+					}
+					return true;
+				},
+			});
+			const trimmed = value.trim();
+			if (!trimmed) {
+				notice = "Auto-stop target unchanged.";
+				continue;
+			}
+			if (trimmed === "-") {
+				autoStopTargets = autoStopTargets.filter(
+					(target) => target.appId !== activeAppId,
+				);
+				notice = "Auto-stop target cleared.";
+				continue;
+			}
+			const targetMinutes = Number(trimmed) * 60;
+			autoStopTargets = [
+				...autoStopTargets.filter((target) => target.appId !== activeAppId),
+				{ appId: activeAppId, targetMinutes },
+			];
+			notice = `Auto-stop set for ${Number(trimmed).toLocaleString()} hours.`;
+			continue;
+		}
 
 		const value = await input({
 			message: "Enter AppIDs (comma or space separated)",
@@ -252,6 +309,7 @@ async function promptGamePicker(
 					const combined = [...new Set([...selectedAppIds, ...entered])];
 					validateAccountSetup({
 						appIds: combined,
+						autoStopTargets,
 						customGame: context.customGame,
 						visible: true,
 						clearRecentActivity: context.clearRecentActivity,
@@ -304,12 +362,17 @@ async function promptConfiguration(
 		default: current?.clearRecentActivity ?? false,
 		theme: LINGER_THEME,
 	});
-	const appIds = await promptGamePicker(ownedGames, current?.appIds ?? [], {
-		customGame,
-		clearRecentActivity,
-		cardFarmingEnabled,
-	});
-	if (appIds === null) {
+	const games = await promptGamePicker(
+		ownedGames,
+		current?.appIds ?? [],
+		current?.autoStopTargets ?? [],
+		{
+			customGame,
+			clearRecentActivity,
+			cardFarmingEnabled,
+		},
+	);
+	if (games === null) {
 		return null;
 	}
 	const visible = await confirm({
@@ -319,7 +382,7 @@ async function promptConfiguration(
 	});
 
 	return {
-		appIds,
+		...games,
 		customGame,
 		visible,
 		clearRecentActivity,
@@ -330,6 +393,7 @@ async function promptConfiguration(
 function currentConfiguration(account: Account): AccountConfiguration {
 	return {
 		appIds: account.appIds,
+		autoStopTargets: account.autoStopTargets,
 		customGame: account.customGame,
 		visible: account.visible,
 		clearRecentActivity: account.clearRecentActivity,
@@ -382,10 +446,11 @@ async function promptCustomGame(account: Account): Promise<string | null> {
 async function promptGameAppIds(
 	store: AccountStore,
 	account: Account,
-): Promise<number[] | null> {
+): Promise<GameSelection | null> {
 	return promptGamePicker(
 		store.listOwnedGames(account.id),
 		account.appIds,
+		account.autoStopTargets,
 		account,
 		() => refreshOwnedGames(store, account.id),
 	);
@@ -490,6 +555,17 @@ function accountSummary(account: Account): string {
 				: "disabled",
 		),
 		row("Boosted AppIDs", games),
+		row(
+			"Auto-stop targets",
+			account.autoStopTargets.length > 0
+				? account.autoStopTargets
+						.map(
+							(target) =>
+								`${target.appId} at ${(target.targetMinutes / 60).toLocaleString()}h`,
+						)
+						.join(", ")
+				: "none",
+		),
 		row("Custom game", account.customGame ?? "none"),
 		row("Away message", account.awayMessage ?? "disabled"),
 		account.lastConnectedAt
@@ -615,7 +691,7 @@ async function manageAccount(
 					value: "customGame",
 				},
 				{
-					name: `Boosted games · ${account.appIds.length} selected`,
+					name: `Boosted games · ${account.appIds.length} selected · ${account.autoStopTargets.length} auto-stop`,
 					value: "appIds",
 				},
 				{
@@ -657,12 +733,12 @@ async function manageAccount(
 				break;
 			}
 			case "appIds": {
-				const appIds = await promptGameAppIds(store, account);
-				if (appIds === null) {
+				const games = await promptGameAppIds(store, account);
+				if (games === null) {
 					pauseMessage("No changes saved.");
 					break;
 				}
-				account = updateConfiguration(store, account, { appIds });
+				account = updateConfiguration(store, account, games);
 				pauseMessage("Boosted games saved.");
 				break;
 			}

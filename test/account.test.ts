@@ -19,6 +19,7 @@ describe("account presence", () => {
 			() =>
 				validatePresence({
 					appIds: [],
+					autoStopTargets: [],
 					customGame: null,
 					visible: true,
 					clearRecentActivity: false,
@@ -31,11 +32,35 @@ describe("account presence", () => {
 		assert.doesNotThrow(() =>
 			validateAccountSetup({
 				appIds: [],
+				autoStopTargets: [],
 				customGame: null,
 				visible: false,
 				clearRecentActivity: false,
 				cardFarmingEnabled: true,
 			}),
+		);
+	});
+
+	it("requires auto-stop targets to belong to selected games", () => {
+		assert.doesNotThrow(() =>
+			validatePresence({
+				appIds: [730],
+				autoStopTargets: [{ appId: 730, targetMinutes: 7_777 * 60 }],
+				customGame: null,
+				visible: true,
+				clearRecentActivity: false,
+			}),
+		);
+		assert.throws(
+			() =>
+				validatePresence({
+					appIds: [440],
+					autoStopTargets: [{ appId: 730, targetMinutes: 7_777 * 60 }],
+					customGame: null,
+					visible: true,
+					clearRecentActivity: false,
+				}),
+			/must be a selected game/iu,
 		);
 	});
 
@@ -47,6 +72,7 @@ describe("account presence", () => {
 		assert.doesNotThrow(() =>
 			validatePresence({
 				appIds,
+				autoStopTargets: [],
 				customGame: null,
 				visible: true,
 				clearRecentActivity: false,
@@ -56,6 +82,7 @@ describe("account presence", () => {
 			() =>
 				validatePresence({
 					appIds,
+					autoStopTargets: [],
 					customGame: "Linger",
 					visible: true,
 					clearRecentActivity: false,
@@ -69,6 +96,7 @@ describe("account presence", () => {
 		assert.doesNotThrow(() =>
 			validatePresence({
 				appIds: maximumAppIds,
+				autoStopTargets: [],
 				customGame: null,
 				visible: true,
 				clearRecentActivity: true,
@@ -80,6 +108,7 @@ describe("account presence", () => {
 			() =>
 				validatePresence({
 					appIds: tooManyAppIds,
+					autoStopTargets: [],
 					customGame: null,
 					visible: true,
 					clearRecentActivity: true,

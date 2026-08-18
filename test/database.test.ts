@@ -29,6 +29,7 @@ describe("AccountStore", () => {
 			refreshTokenEncrypted: "encrypted",
 			machineAuthTokenEncrypted: null,
 			appIds: [730],
+			autoStopTargets: [],
 			customGame: null,
 			visible: true,
 			clearRecentActivity: false,
@@ -39,6 +40,7 @@ describe("AccountStore", () => {
 		assert.equal(store.getByName("VOCAL")?.id, account.id);
 		const updated = store.updateConfiguration(account.id, {
 			appIds: [440, 570],
+			autoStopTargets: [],
 			customGame: "Linger",
 			visible: false,
 			clearRecentActivity: true,
@@ -66,6 +68,7 @@ describe("AccountStore", () => {
 			refreshTokenEncrypted: "encrypted",
 			machineAuthTokenEncrypted: null,
 			appIds: [730],
+			autoStopTargets: [],
 			customGame: null,
 			visible: true,
 			clearRecentActivity: false,
@@ -89,6 +92,7 @@ describe("AccountStore", () => {
 			refreshTokenEncrypted: "encrypted",
 			machineAuthTokenEncrypted: null,
 			appIds: [730],
+			autoStopTargets: [],
 			customGame: null,
 			visible: true,
 			clearRecentActivity: false,
@@ -128,6 +132,7 @@ describe("AccountStore", () => {
 			refreshTokenEncrypted: "encrypted",
 			machineAuthTokenEncrypted: null,
 			appIds: [730],
+			autoStopTargets: [],
 			customGame: null,
 			visible: true,
 			clearRecentActivity: false,
@@ -215,6 +220,40 @@ describe("AccountStore", () => {
 		assert.equal(store.get("id")?.cardFarmingEnabled, false);
 		assert.deepEqual(store.get("id")?.cardFarmingQueue, []);
 		assert.equal(store.get("id")?.awayMessage, null);
+		assert.deepEqual(store.get("id")?.autoStopTargets, []);
+		store.close();
+	});
+
+	it("persists and completes per-game auto-stop targets", () => {
+		const store = createStore();
+		const account = store.create({
+			accountName: "auto-stop-test",
+			steamId: "76561198000000000",
+			refreshTokenEncrypted: "encrypted",
+			machineAuthTokenEncrypted: null,
+			appIds: [730, 440],
+			autoStopTargets: [{ appId: 730, targetMinutes: 7_777 * 60 }],
+			customGame: null,
+			visible: true,
+			clearRecentActivity: false,
+			cardFarmingEnabled: true,
+			enabled: true,
+		});
+		store.replaceCardFarmingQueue(account.id, [
+			{ appId: 730, remainingDrops: 2 },
+		]);
+
+		assert.deepEqual(account.autoStopTargets, [
+			{ appId: 730, targetMinutes: 7_777 * 60 },
+		]);
+		const completed = store.completeAutoStop(account.id, 730);
+		assert.deepEqual(completed.appIds, [440]);
+		assert.deepEqual(completed.autoStopTargets, []);
+		assert.deepEqual(completed.cardFarmingQueue, [
+			{ appId: 730, remainingDrops: 2 },
+		]);
+		assert.equal(completed.enabled, true);
+		assert.equal(completed.revision, account.revision + 1);
 		store.close();
 	});
 
@@ -226,6 +265,7 @@ describe("AccountStore", () => {
 			refreshTokenEncrypted: "encrypted",
 			machineAuthTokenEncrypted: null,
 			appIds: [],
+			autoStopTargets: [],
 			customGame: null,
 			visible: false,
 			clearRecentActivity: false,

@@ -40,6 +40,29 @@ export async function getOwnedGames(
 	return normalizeOwnedGames(response.apps);
 }
 
+export async function getOwnedGamePlaytimes(
+	client: SteamUser,
+	steamId: string,
+	appIds: readonly number[],
+): Promise<Map<number, number>> {
+	if (appIds.length === 0) {
+		return new Map();
+	}
+	const response = await client.getUserOwnedApps(steamId, {
+		includePlayedFreeGames: true,
+		filterAppids: [...appIds],
+	});
+	return new Map(
+		response.apps
+			.filter(
+				(app) =>
+					Number.isSafeInteger(app.appid) &&
+					Number.isSafeInteger(app.playtime_forever),
+			)
+			.map((app) => [app.appid, Math.max(0, app.playtime_forever)]),
+	);
+}
+
 export function fetchOwnedGamesForLogin(
 	refreshToken: string,
 	steamId: string,

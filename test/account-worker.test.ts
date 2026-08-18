@@ -4,11 +4,27 @@ import {
 	AWAY_MESSAGE_COOLDOWN_MS,
 	AwayMessageCooldown,
 	assessProfileStatus,
+	calculateAutoStopCheckDelay,
 	extendEarlyRetryProtection,
 	guardWebLogOnAfterDisconnect,
 } from "../src/steam/account-worker.js";
 
 describe("Steam account worker", () => {
+	it("schedules the next auto-stop from current Steam minutes", () => {
+		const targets = [
+			{ appId: 730, targetMinutes: 7_777 * 60 },
+			{ appId: 440, targetMinutes: 1_000 },
+		];
+		const playtimes = new Map([
+			[730, 7_777 * 60 - 1],
+			[440, 0],
+		]);
+		assert.equal(
+			calculateAutoStopCheckDelay(targets, playtimes, 10_000),
+			50_000,
+		);
+	});
+
 	it("allows one away reply per sender every 30 minutes", () => {
 		const cooldown = new AwayMessageCooldown();
 		const firstReplyAt = 1_000;

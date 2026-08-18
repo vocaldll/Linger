@@ -14,6 +14,7 @@ Linger is a terminal-based Steam hour booster and card farmer with multi-account
 - Browse and search your Steam library
 - Add games manually by AppID
 - Boost multiple games simultaneously
+- Stop boosting selected games at configured total-hour targets
 - Automatically farm available trading-card drops
 - Reconnect disconnected accounts automatically
 - Configure online visibility per account
@@ -75,6 +76,8 @@ Back up the data directory or Docker volume as a unit. Deleting it removes Linge
 - Steam supports at most 32 simultaneous game entries. A custom title uses one slot, and recent-activity clearing reserves three. Games can still be configured using AppIDs if the library is unavailable.
 
 - Card farming temporarily replaces normal hour boosting. When the queue finishes, boosting resumes, or the account is disabled if no normal presence is configured.
+
+- Auto-stop targets apply to normal hour boosting only. Card farming may carry a game beyond its target; Linger checks the current Steam playtime before normal boosting resumes.
 
 - Steam has no documented API for remaining card drops, so detection relies on Community badge markup. Ambiguous, rate-limited, or logged-out responses are retried rather than treated as zero drops.
 

@@ -27,6 +27,7 @@ describe("Steam presence", () => {
 		assert.deepEqual(
 			buildGamesPlayed({
 				appIds: [730, 440],
+				autoStopTargets: [],
 				customGame: "Linger",
 				visible: true,
 				clearRecentActivity: false,
@@ -38,6 +39,7 @@ describe("Steam presence", () => {
 	it("places helper entries after real activity in the persistent presence", () => {
 		const plan = buildPresencePlan({
 			appIds: [730],
+			autoStopTargets: [],
 			customGame: null,
 			visible: false,
 			clearRecentActivity: true,
@@ -69,6 +71,7 @@ describe("Steam presence", () => {
 			mode: "boost",
 			configuration: {
 				appIds: [730],
+				autoStopTargets: [],
 				customGame: null,
 				visible: true,
 				clearRecentActivity: true,
@@ -104,6 +107,7 @@ describe("Steam presence", () => {
 			mode: "boost",
 			configuration: {
 				appIds: [730],
+				autoStopTargets: [],
 				customGame: null,
 				visible: true,
 				clearRecentActivity: true,

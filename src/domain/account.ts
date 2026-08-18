@@ -18,6 +18,7 @@ export type Account = {
 	refreshTokenEncrypted: string;
 	machineAuthTokenEncrypted: string | null;
 	appIds: number[];
+	autoStopTargets: AutoStopTarget[];
 	customGame: string | null;
 	awayMessage: string | null;
 	visible: boolean;
@@ -32,6 +33,11 @@ export type Account = {
 	lastConnectedAt: string | null;
 	createdAt: string;
 	updatedAt: string;
+};
+
+export type AutoStopTarget = {
+	appId: number;
+	targetMinutes: number;
 };
 
 export type CardFarmingEntry = {
@@ -55,7 +61,11 @@ export type NewAccount = Omit<
 
 export type AccountConfiguration = Pick<
 	Account,
-	"appIds" | "customGame" | "visible" | "clearRecentActivity"
+	| "appIds"
+	| "autoStopTargets"
+	| "customGame"
+	| "visible"
+	| "clearRecentActivity"
 >;
 
 export type AccountSetup = AccountConfiguration &
@@ -122,6 +132,38 @@ export function validateAccountSetup(configuration: AccountSetup): void {
 	}
 }
 
+export function validateAutoStopTargets(
+	targets: readonly AutoStopTarget[],
+	appIds: readonly number[],
+): void {
+	const selectedAppIds = new Set(appIds);
+	const seen = new Set<number>();
+	for (const target of targets) {
+		if (
+			!Number.isSafeInteger(target.appId) ||
+			target.appId <= 0 ||
+			target.appId > 0xffff_ffff
+		) {
+			throw new Error(`Invalid auto-stop AppID: ${target.appId}`);
+		}
+		if (
+			!Number.isSafeInteger(target.targetMinutes) ||
+			target.targetMinutes <= 0
+		) {
+			throw new Error(`Invalid auto-stop target for AppID ${target.appId}`);
+		}
+		if (seen.has(target.appId)) {
+			throw new Error(`Duplicate auto-stop AppID: ${target.appId}`);
+		}
+		if (!selectedAppIds.has(target.appId)) {
+			throw new Error(
+				`Auto-stop AppID ${target.appId} must be a selected game`,
+			);
+		}
+		seen.add(target.appId);
+	}
+}
+
 export function validateCardFarmingQueue(
 	queue: readonly CardFarmingEntry[],
 ): void {
@@ -148,6 +190,7 @@ export function validateCardFarmingQueue(
 }
 
 function validatePresenceSlots(configuration: AccountConfiguration): void {
+	validateAutoStopTargets(configuration.autoStopTargets, configuration.appIds);
 	const customGame = configuration.customGame?.trim() || null;
 	if (customGame && customGame.length > MAX_CUSTOM_GAME_LENGTH) {
 		throw new Error(
