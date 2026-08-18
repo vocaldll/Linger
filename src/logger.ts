@@ -6,6 +6,7 @@ export type LogSubsystem =
 	| "runner"
 	| "steam"
 	| "presence"
+	| "chat"
 	| "library"
 	| "cards";
 export type LogFields = Record<

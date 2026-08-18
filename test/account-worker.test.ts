@@ -1,12 +1,40 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+	AWAY_MESSAGE_COOLDOWN_MS,
+	AwayMessageCooldown,
 	assessProfileStatus,
 	extendEarlyRetryProtection,
 	guardWebLogOnAfterDisconnect,
 } from "../src/steam/account-worker.js";
 
 describe("Steam account worker", () => {
+	it("allows one away reply per sender every 30 minutes", () => {
+		const cooldown = new AwayMessageCooldown();
+		const firstReplyAt = 1_000;
+		assert.equal(cooldown.reserve("sender-a", firstReplyAt), firstReplyAt);
+		assert.equal(
+			cooldown.reserve("sender-a", firstReplyAt + AWAY_MESSAGE_COOLDOWN_MS - 1),
+			null,
+		);
+		assert.equal(
+			cooldown.reserve("sender-a", firstReplyAt + AWAY_MESSAGE_COOLDOWN_MS),
+			firstReplyAt + AWAY_MESSAGE_COOLDOWN_MS,
+		);
+		assert.equal(
+			cooldown.reserve("sender-b", firstReplyAt + 1),
+			firstReplyAt + 1,
+		);
+	});
+
+	it("releases the away-message cooldown after a failed send", () => {
+		const cooldown = new AwayMessageCooldown();
+		const replyAt = cooldown.reserve("sender", 1_000);
+		assert.equal(replyAt, 1_000);
+		cooldown.release("sender", 1_000);
+		assert.equal(cooldown.reserve("sender", 1_001), 1_001);
+	});
+
 	it("skips steam-user's stale automatic web logon after a disconnect", () => {
 		let calls = 0;
 		const client = {

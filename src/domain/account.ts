@@ -19,6 +19,7 @@ export type Account = {
 	machineAuthTokenEncrypted: string | null;
 	appIds: number[];
 	customGame: string | null;
+	awayMessage: string | null;
 	visible: boolean;
 	clearRecentActivity: boolean;
 	cardFarmingEnabled: boolean;
@@ -41,6 +42,7 @@ export type CardFarmingEntry = {
 export type NewAccount = Omit<
 	Account,
 	| "id"
+	| "awayMessage"
 	| "cardFarmingQueue"
 	| "revision"
 	| "restartNonce"

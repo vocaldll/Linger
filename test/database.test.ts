@@ -48,6 +48,13 @@ describe("AccountStore", () => {
 		assert.equal(updated.visible, false);
 		assert.equal(updated.clearRecentActivity, true);
 		assert.equal(updated.revision, account.revision + 1);
+		const withAwayMessage = store.setAwayMessage(
+			account.id,
+			"  I am away right now.  ",
+		);
+		assert.equal(withAwayMessage.awayMessage, "I am away right now.");
+		assert.equal(withAwayMessage.revision, updated.revision + 1);
+		assert.equal(store.setAwayMessage(account.id, "  ").awayMessage, null);
 		store.close();
 	});
 
@@ -207,6 +214,7 @@ describe("AccountStore", () => {
 		assert.equal(store.get("id")?.clearRecentActivity, false);
 		assert.equal(store.get("id")?.cardFarmingEnabled, false);
 		assert.deepEqual(store.get("id")?.cardFarmingQueue, []);
+		assert.equal(store.get("id")?.awayMessage, null);
 		store.close();
 	});
 

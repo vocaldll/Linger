@@ -447,6 +447,18 @@ async function promptRecentActivity(account: Account): Promise<boolean> {
 	});
 }
 
+async function promptAwayMessage(account: Account): Promise<string | null> {
+	const value = await input({
+		message: `Away message (current: ${account.awayMessage ?? "disabled"}; blank keeps, "-" disables)`,
+		theme: LINGER_THEME,
+	});
+	const trimmed = value.trim();
+	if (!trimmed) {
+		return account.awayMessage;
+	}
+	return trimmed === "-" ? null : trimmed;
+}
+
 function accountSummary(account: Account): string {
 	const games = account.appIds.length > 0 ? account.appIds.join(", ") : "none";
 	const status =
@@ -479,6 +491,7 @@ function accountSummary(account: Account): string {
 		),
 		row("Boosted AppIDs", games),
 		row("Custom game", account.customGame ?? "none"),
+		row("Away message", account.awayMessage ?? "disabled"),
 		account.lastConnectedAt
 			? row("Last connected", account.lastConnectedAt)
 			: null,
@@ -614,6 +627,10 @@ async function manageAccount(
 					value: "recentActivity",
 				},
 				{
+					name: `Away message · ${account.awayMessage ? "enabled" : "disabled"}`,
+					value: "awayMessage",
+				},
+				{
 					name: `Card farming · ${account.cardFarmingEnabled ? `${account.cardFarmingQueue.length} queued` : "disabled"}`,
 					value: "cardFarming",
 				},
@@ -672,6 +689,17 @@ async function manageAccount(
 				}
 				break;
 			}
+			case "awayMessage":
+				account = store.setAwayMessage(
+					account.id,
+					await promptAwayMessage(account),
+				);
+				pauseMessage(
+					account.awayMessage
+						? "Away message saved."
+						: "Away message disabled.",
+				);
+				break;
 			case "cardFarming": {
 				const change = await confirm({
 					message: account.cardFarmingEnabled

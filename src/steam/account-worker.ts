@@ -20,6 +20,7 @@ const LOGGED_IN_ELSEWHERE_RETRY_MS = 45 * 60 * 1_000;
 const PROFILE_STATUS_POLL_INTERVAL_MS = 30_000;
 const PROFILE_STATUS_CONFIRMATIONS_REQUIRED = 2;
 const EARLY_RETRY_STABILITY_MS = 30_000;
+export const AWAY_MESSAGE_COOLDOWN_MS = 30 * 60 * 1_000;
 
 type SteamUserWithMachineTokenEvent = SteamUser & {
 	on(event: "machineAuthToken", listener: (token: string) => void): SteamUser;
@@ -98,6 +99,28 @@ export function extendEarlyRetryProtection(
 	return protectionUntil > now ? now + EARLY_RETRY_STABILITY_MS : 0;
 }
 
+export class AwayMessageCooldown {
+	readonly #replyTimes = new Map<string, number>();
+
+	reserve(senderId: string, now = Date.now()): number | null {
+		const lastReplyAt = this.#replyTimes.get(senderId);
+		if (
+			lastReplyAt !== undefined &&
+			now - lastReplyAt < AWAY_MESSAGE_COOLDOWN_MS
+		) {
+			return null;
+		}
+		this.#replyTimes.set(senderId, now);
+		return now;
+	}
+
+	release(senderId: string, replyAt: number): void {
+		if (this.#replyTimes.get(senderId) === replyAt) {
+			this.#replyTimes.delete(senderId);
+		}
+	}
+}
+
 function presenceChanged(previous: Account, next: Account): boolean {
 	return (
 		previous.visible !== next.visible ||
@@ -124,6 +147,7 @@ export class AccountWorker {
 	#gameExitWait: GameExitWait | null = null;
 	#earlyRetryProtectionUntil = 0;
 	#librarySyncGeneration: number | null = null;
+	readonly #awayMessageCooldown = new AwayMessageCooldown();
 
 	constructor(
 		private readonly store: AccountStore,
@@ -342,6 +366,40 @@ export class AccountWorker {
 			if (this.#isCurrent(generation, client)) {
 				this.#cardFarming?.notifyNewItems();
 			}
+		});
+		client.chat.on("friendMessage", (message) => {
+			if (!this.#isCurrent(generation, client)) {
+				return;
+			}
+			const awayMessage = this.#record.awayMessage;
+			if (!awayMessage) {
+				return;
+			}
+			const senderId = message.steamid_friend.getSteamID64();
+			const replyAt = this.#awayMessageCooldown.reserve(senderId);
+			if (replyAt === null) {
+				return;
+			}
+			void client.chat
+				.sendFriendMessage(message.steamid_friend, awayMessage, {
+					containsBbCode: false,
+				})
+				.then(
+					() => {
+						logger.debug("chat", "Away message sent", {
+							account: this.#record.accountName,
+							recipient: senderId,
+						});
+					},
+					(error: unknown) => {
+						this.#awayMessageCooldown.release(senderId, replyAt);
+						logger.warn("chat", "Could not send away message", {
+							account: this.#record.accountName,
+							recipient: senderId,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					},
+				);
 		});
 
 		client.on("steamGuard", () => {

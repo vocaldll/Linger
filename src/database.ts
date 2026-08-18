@@ -25,6 +25,7 @@ type AccountRow = {
 	machine_auth_token_encrypted: string | null;
 	app_ids_json: string;
 	custom_game: string | null;
+	away_message: string | null;
 	visible: number;
 	clear_recent_activity: number;
 	card_farming_enabled: number;
@@ -59,7 +60,7 @@ type LibraryRefreshRow = {
 
 const ACCOUNT_COLUMNS = `
   id, account_name, steam_id, refresh_token_encrypted, machine_auth_token_encrypted,
-  app_ids_json, custom_game, visible, clear_recent_activity, card_farming_enabled,
+  app_ids_json, custom_game, away_message, visible, clear_recent_activity, card_farming_enabled,
   card_farming_queue_json, enabled, revision, restart_nonce, status,
   last_error, last_connected_at, created_at, updated_at
 `;
@@ -94,6 +95,7 @@ function mapAccount(row: AccountRow): Account {
 		machineAuthTokenEncrypted: row.machine_auth_token_encrypted,
 		appIds: parseAppIdsJson(row.app_ids_json),
 		customGame: row.custom_game,
+		awayMessage: row.away_message,
 		visible: row.visible === 1,
 		clearRecentActivity: row.clear_recent_activity === 1,
 		cardFarmingEnabled: row.card_farming_enabled === 1,
@@ -206,6 +208,18 @@ export class AccountStore {
 				new Date().toISOString(),
 				id,
 			);
+		this.#assertChanged(result.changes, id);
+		return this.#require(id);
+	}
+
+	setAwayMessage(id: string, message: string | null): Account {
+		const result = this.#db
+			.prepare(`
+        UPDATE accounts
+        SET away_message = ?, revision = revision + 1, updated_at = ?
+        WHERE id = ?
+      `)
+			.run(message?.trim() || null, new Date().toISOString(), id);
 		this.#assertChanged(result.changes, id);
 		return this.#require(id);
 	}
@@ -515,7 +529,7 @@ export class AccountStore {
 			user_version: number;
 		};
 		const version = versionRow.user_version;
-		if (version > 6) {
+		if (version > 7) {
 			throw new Error(
 				`Database schema ${version} is newer than this version of Linger supports`,
 			);
@@ -601,6 +615,13 @@ export class AccountStore {
           last_error TEXT
         );
         PRAGMA user_version = 6;
+			`);
+		}
+
+		if (version <= 6) {
+			this.#db.exec(`
+        ALTER TABLE accounts ADD COLUMN away_message TEXT;
+        PRAGMA user_version = 7;
       `);
 		}
 	}
