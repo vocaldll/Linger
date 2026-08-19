@@ -3,35 +3,21 @@
 Linger is a terminal-based Steam hour booster and card farmer with multi-account support.
 
 > [!WARNING]
-> Using Linger to boost playtime or automatically farm trading cards violates Section 4.C, "Automation," of the [Steam Subscriber Agreement](https://store.steampowered.com/subscriber_agreement/). Valve prohibits automation that fakes playtime or earns rewards without genuine user input. Under Section 4.D, Valve may restrict or terminate affected Steam accounts. Use Linger at your own risk.
+> Linger automates playtime and trading-card farming, which Steam prohibits under Sections 4.C–D of the [Steam Subscriber Agreement](https://store.steampowered.com/subscriber_agreement/). Valve may restrict or terminate affected accounts. Use at your own risk.
 
 ## Features
 
 - Manage multiple Steam accounts through an interactive TUI
-- Sign in with a Steam Mobile QR code or Steam credentials
-- Use Steam passwords only during sign-in and never save them locally
-- Preserve user privacy with no telemetry and a random Steam device identity generated separately for each installation instead of from hostname or hardware data
-- Browse and search your Steam library
-- Add games manually by AppID
-- Boost multiple games simultaneously
-- Stop boosting selected games at configured total-hour targets
-- Automatically farm available trading-card drops
-- Restart disconnected Steam sessions automatically
-- Configure online visibility per account
-- Send a configurable away message with a 30-minute per-sender cooldown
-- Display a custom game title
-- Clear recent Steam activity
-- Encrypt saved Steam session tokens with a local master key
-- Apply configuration changes without restarting the runner
-
-## Requirements
-
-- Node.js 24 or newer
-- pnpm 11
+- Sign in using a Steam Mobile QR code or credentials; passwords are never stored
+- Browse and search your library or add games manually by AppID
+- Boost multiple games, set total-hour targets, and automatically farm card drops
+- Configure visibility, custom game titles, away messages, and recent activity
+- Recover disconnected sessions and apply configuration changes automatically
+- Encrypt saved session tokens with a local master key
 
 ## Quick start
 
-Install and build Linger, open the manager to add accounts, then start the runner:
+Requires Node.js 24 or newer and pnpm 11.
 
 ```sh
 pnpm install
@@ -40,7 +26,7 @@ pnpm manage
 pnpm start
 ```
 
-The manager can be opened again while the runner is active. Configuration changes are picked up automatically.
+Open the manager again at any time; the runner applies configuration changes automatically.
 
 ## Docker
 
