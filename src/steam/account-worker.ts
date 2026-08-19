@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import SteamUser from "steam-user";
 import type { CredentialVault } from "../crypto.js";
 import type { AccountStore } from "../database.js";
@@ -40,6 +41,46 @@ export function calculateAutoStopCheckDelay(
 			),
 			maximumDelayMs,
 		),
+	);
+}
+
+export function findReachedAutoStopTargets(
+	targets: readonly AutoStopTarget[],
+	playtimes: ReadonlyMap<number, number>,
+	activeDurationMs: number,
+): AutoStopTarget[] {
+	return targets.filter(
+		(target) =>
+			(target.targetMinutes - (playtimes.get(target.appId) ?? 0)) * 60_000 <=
+			activeDurationMs,
+	);
+}
+
+export function selectCurrentAutoStopTargets(
+	snapshot: Account,
+	persisted: Account,
+	targets: readonly AutoStopTarget[],
+): AutoStopTarget[] {
+	if (
+		persisted.id !== snapshot.id ||
+		persisted.restartNonce !== snapshot.restartNonce ||
+		persisted.refreshTokenEncrypted !== snapshot.refreshTokenEncrypted ||
+		persisted.machineAuthTokenEncrypted !==
+			snapshot.machineAuthTokenEncrypted ||
+		configuredAppsChanged(snapshot, persisted) ||
+		!persisted.enabled ||
+		persisted.cardFarmingEnabled
+	) {
+		return [];
+	}
+	return targets.filter(
+		(target) =>
+			persisted.appIds.includes(target.appId) &&
+			persisted.autoStopTargets.some(
+				(current) =>
+					current.appId === target.appId &&
+					current.targetMinutes === target.targetMinutes,
+			),
 	);
 }
 
@@ -142,16 +183,21 @@ export class AwayMessageCooldown {
 	}
 }
 
-function presenceChanged(previous: Account, next: Account): boolean {
+export function presenceChanged(previous: Account, next: Account): boolean {
 	return (
 		previous.visible !== next.visible ||
 		previous.clearRecentActivity !== next.clearRecentActivity ||
 		previous.cardFarmingEnabled !== next.cardFarmingEnabled ||
 		previous.cardFarmingQueue[0]?.appId !== next.cardFarmingQueue[0]?.appId ||
 		previous.customGame !== next.customGame ||
-		configuredAppsChanged(previous, next) ||
+		configuredAppsChanged(previous, next)
+	);
+}
+
+function autoStopTargetsChanged(previous: Account, next: Account): boolean {
+	return (
 		JSON.stringify(previous.autoStopTargets) !==
-			JSON.stringify(next.autoStopTargets)
+		JSON.stringify(next.autoStopTargets)
 	);
 }
 
@@ -175,7 +221,9 @@ export class AccountWorker {
 	#earlyRetryProtectionUntil = 0;
 	#librarySyncGeneration: number | null = null;
 	#presenceOperation = 0;
+	#autoStopMonitoringRevision = 0;
 	#autoStopTimer: NodeJS.Timeout | null = null;
+	#autoStopTargetsSuppressed = false;
 	readonly #awayMessageCooldown = new AwayMessageCooldown();
 
 	constructor(
@@ -205,6 +253,7 @@ export class AccountWorker {
 			previous.refreshTokenEncrypted !== next.refreshTokenEncrypted ||
 			previous.machineAuthTokenEncrypted !== next.machineAuthTokenEncrypted;
 		const restartRequested = previous.restartNonce !== next.restartNonce;
+		const targetsChanged = autoStopTargetsChanged(previous, next);
 		this.#record = next;
 		this.#cardFarming?.reconcile(next);
 
@@ -230,8 +279,21 @@ export class AccountWorker {
 			this.#retryAttempt = 0;
 			this.#gameExitWait = null;
 			this.#earlyRetryProtectionUntil = 0;
-		} else if (this.#client && presenceChanged(previous, next)) {
-			this.#applyPresence();
+		} else if (this.#client) {
+			if (presenceChanged(previous, next)) {
+				this.#applyPresence();
+			} else if (targetsChanged) {
+				if (next.cardFarmingEnabled) {
+					this.#resetAutoStopMonitoring();
+				} else if (
+					this.#appliedPresenceMode === "hour-boosting" &&
+					!this.#autoStopTargetsSuppressed
+				) {
+					this.#refreshAutoStopMonitoring();
+				} else {
+					this.#applyPresence();
+				}
+			}
 		}
 		if (this.#client) {
 			if (configuredAppsChanged(previous, next)) {
@@ -470,31 +532,53 @@ export class AccountWorker {
 		}
 	}
 
-	#applyPresence(): void {
+	#applyPresence(preflightAutoStops = true): void {
 		const presence = this.#presence;
 		const client = this.#client;
 		if (!presence || !client) {
 			return;
 		}
-		this.#cancelAutoStopTimer();
+		this.#resetAutoStopMonitoring();
 		const operation = ++this.#presenceOperation;
-		void this.#applyPresenceOperation(operation, presence, client);
+		const monitoringRevision = this.#autoStopMonitoringRevision;
+		void this.#applyPresenceOperation(
+			operation,
+			monitoringRevision,
+			presence,
+			client,
+			preflightAutoStops,
+		);
 	}
 
 	async #applyPresenceOperation(
 		operation: number,
+		monitoringRevision: number,
 		presence: PresenceController,
 		client: SteamUser,
+		preflightAutoStops: boolean,
 	): Promise<void> {
 		const snapshot = this.#record;
 		if (
 			!snapshot.enabled ||
 			snapshot.cardFarmingEnabled ||
-			snapshot.autoStopTargets.length === 0
+			snapshot.autoStopTargets.length === 0 ||
+			!preflightAutoStops
 		) {
 			try {
 				const applied = await presence.apply(this.#presenceIntent(snapshot));
+				if (applied) {
+					this.#autoStopTargetsSuppressed = false;
+				}
 				this.#finishPresenceApplication(presence, snapshot, applied);
+				if (
+					applied &&
+					!preflightAutoStops &&
+					snapshot.enabled &&
+					!snapshot.cardFarmingEnabled &&
+					snapshot.autoStopTargets.length > 0
+				) {
+					this.#refreshAutoStopMonitoring();
+				}
 			} catch (error) {
 				if (this.#isPresenceOperationCurrent(operation, presence, client)) {
 					logger.error("presence", "Could not apply", {
@@ -505,77 +589,10 @@ export class AccountWorker {
 			}
 			return;
 		}
+
+		let playtimes: ReadonlyMap<number, number>;
 		try {
-			const targetedAppIds = new Set(
-				snapshot.autoStopTargets.map((target) => target.appId),
-			);
-			const untargetedAppIds = snapshot.appIds.filter(
-				(appId) => !targetedAppIds.has(appId),
-			);
-			await presence.apply(this.#normalBoostIntent(snapshot, untargetedAppIds));
-			if (!this.#isPresenceOperationCurrent(operation, presence, client)) {
-				return;
-			}
-
-			const steamId = client.steamID?.getSteamID64();
-			if (!steamId) {
-				throw new Error("Steam did not provide an account ID for auto-stop");
-			}
-			const playtimes = await getOwnedGamePlaytimes(
-				client,
-				steamId,
-				snapshot.autoStopTargets.map((target) => target.appId),
-			);
-			if (!this.#isPresenceOperationCurrent(operation, presence, client)) {
-				return;
-			}
-
-			const missingAppId = snapshot.autoStopTargets.find(
-				(target) => !playtimes.has(target.appId),
-			)?.appId;
-			if (missingAppId !== undefined) {
-				throw new Error(
-					`Steam did not return playtime for AppID ${missingAppId}`,
-				);
-			}
-
-			const reached = snapshot.autoStopTargets.filter(
-				(target) => (playtimes.get(target.appId) ?? 0) >= target.targetMinutes,
-			);
-			if (reached.length > 0) {
-				for (const target of reached) {
-					this.#record = this.store.completeAutoStop(
-						this.#record.id,
-						target.appId,
-					);
-					logger.info("presence", "Auto-stop target reached", {
-						account: this.#record.accountName,
-						app: target.appId,
-						targetHours: target.targetMinutes / 60,
-					});
-				}
-				this.#applyPresence();
-				return;
-			}
-
-			const boostingStartedAt = Date.now();
-			const applied = await presence.apply({
-				mode: "boost",
-				configuration: snapshot,
-			});
-			if (!this.#isPresenceOperationCurrent(operation, presence, client)) {
-				return;
-			}
-			this.#finishPresenceApplication(presence, snapshot, applied);
-			if (!applied) {
-				return;
-			}
-			const nextCheckMs = calculateAutoStopCheckDelay(
-				snapshot.autoStopTargets,
-				playtimes,
-				Date.now() - boostingStartedAt,
-			);
-			this.#scheduleAutoStopCheck(operation, presence, client, nextCheckMs);
+			playtimes = await this.#loadAutoStopPlaytimes(snapshot, client);
 		} catch (error) {
 			if (!this.#isPresenceOperationCurrent(operation, presence, client)) {
 				return;
@@ -585,12 +602,89 @@ export class AccountWorker {
 				error: error instanceof Error ? error.message : String(error),
 				retry: "2m",
 			});
-			this.#scheduleAutoStopCheck(
-				operation,
-				presence,
-				client,
-				AUTO_STOP_RETRY_MS,
-			);
+			try {
+				const targetedAppIds = new Set(
+					snapshot.autoStopTargets.map((target) => target.appId),
+				);
+				const untargetedAppIds = snapshot.appIds.filter(
+					(appId) => !targetedAppIds.has(appId),
+				);
+				const applied = await presence.apply(
+					this.#normalBoostIntent(snapshot, untargetedAppIds),
+				);
+				if (!this.#isPresenceOperationCurrent(operation, presence, client)) {
+					return;
+				}
+				this.#autoStopTargetsSuppressed = applied;
+				this.#finishPresenceApplication(presence, snapshot, applied);
+				if (applied) {
+					this.#scheduleAutoStopRetry(
+						monitoringRevision,
+						presence,
+						client,
+						() => this.#refreshAutoStopMonitoring(),
+					);
+				}
+			} catch (presenceError) {
+				if (this.#isPresenceOperationCurrent(operation, presence, client)) {
+					logger.error("presence", "Could not apply", {
+						account: snapshot.accountName,
+						error:
+							presenceError instanceof Error
+								? presenceError.message
+								: String(presenceError),
+					});
+				}
+			}
+			return;
+		}
+
+		if (!this.#isPresenceOperationCurrent(operation, presence, client)) {
+			return;
+		}
+		const reached = findReachedAutoStopTargets(
+			snapshot.autoStopTargets,
+			playtimes,
+			0,
+		);
+		if (reached.length > 0) {
+			if (this.#completeAutoStops(reached).length > 0) {
+				this.#applyPresence(false);
+			}
+			return;
+		}
+
+		const boostingStartedAt = performance.now();
+		try {
+			const applied = await presence.apply({
+				mode: "boost",
+				configuration: snapshot,
+			});
+			if (!this.#isPresenceOperationCurrent(operation, presence, client)) {
+				return;
+			}
+			this.#autoStopTargetsSuppressed = false;
+			this.#finishPresenceApplication(presence, snapshot, applied);
+			if (
+				applied &&
+				this.#isAutoStopMonitoringCurrent(monitoringRevision, presence, client)
+			) {
+				this.#scheduleAutoStopCheck(
+					monitoringRevision,
+					presence,
+					client,
+					snapshot.autoStopTargets,
+					playtimes,
+					boostingStartedAt,
+				);
+			}
+		} catch (error) {
+			if (this.#isPresenceOperationCurrent(operation, presence, client)) {
+				logger.error("presence", "Could not apply", {
+					account: snapshot.accountName,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 		}
 	}
 
@@ -663,19 +757,190 @@ export class AccountWorker {
 		this.#appliedPresenceMode = mode;
 	}
 
-	#scheduleAutoStopCheck(
-		operation: number,
+	#refreshAutoStopMonitoring(): void {
+		const presence = this.#presence;
+		const client = this.#client;
+		this.#resetAutoStopMonitoring();
+		const snapshot = this.#record;
+		if (
+			!presence ||
+			!client ||
+			!snapshot.enabled ||
+			snapshot.cardFarmingEnabled ||
+			snapshot.autoStopTargets.length === 0
+		) {
+			return;
+		}
+		const monitoringRevision = this.#autoStopMonitoringRevision;
+		void this.#refreshAutoStopMonitoringOperation(
+			monitoringRevision,
+			presence,
+			client,
+			snapshot,
+		);
+	}
+
+	async #refreshAutoStopMonitoringOperation(
+		monitoringRevision: number,
 		presence: PresenceController,
 		client: SteamUser,
-		delayMs: number,
+		snapshot: Account,
+	): Promise<void> {
+		try {
+			const playtimes = await this.#loadAutoStopPlaytimes(snapshot, client);
+			if (
+				!this.#isAutoStopMonitoringCurrent(monitoringRevision, presence, client)
+			) {
+				return;
+			}
+			const reached = findReachedAutoStopTargets(
+				snapshot.autoStopTargets,
+				playtimes,
+				0,
+			);
+			if (reached.length > 0) {
+				if (this.#completeAutoStops(reached).length > 0) {
+					this.#applyPresence(false);
+				}
+				return;
+			}
+			if (this.#autoStopTargetsSuppressed) {
+				this.#applyPresence();
+				return;
+			}
+			this.#scheduleAutoStopCheck(
+				monitoringRevision,
+				presence,
+				client,
+				snapshot.autoStopTargets,
+				playtimes,
+				performance.now(),
+			);
+		} catch (error) {
+			if (
+				!this.#isAutoStopMonitoringCurrent(monitoringRevision, presence, client)
+			) {
+				return;
+			}
+			logger.warn("presence", "Auto-stop playtime check failed", {
+				account: snapshot.accountName,
+				error: error instanceof Error ? error.message : String(error),
+				retry: "2m",
+			});
+			this.#scheduleAutoStopRetry(monitoringRevision, presence, client, () =>
+				this.#refreshAutoStopMonitoring(),
+			);
+		}
+	}
+
+	async #loadAutoStopPlaytimes(
+		snapshot: Account,
+		client: SteamUser,
+	): Promise<ReadonlyMap<number, number>> {
+		const steamId = client.steamID?.getSteamID64();
+		if (!steamId) {
+			throw new Error("Steam did not provide an account ID for auto-stop");
+		}
+		const playtimes = await getOwnedGamePlaytimes(
+			client,
+			steamId,
+			snapshot.autoStopTargets.map((target) => target.appId),
+		);
+		const missingAppId = snapshot.autoStopTargets.find(
+			(target) => !playtimes.has(target.appId),
+		)?.appId;
+		if (missingAppId !== undefined) {
+			throw new Error(
+				`Steam did not return playtime for AppID ${missingAppId}`,
+			);
+		}
+		return playtimes;
+	}
+
+	#completeAutoStops(targets: readonly AutoStopTarget[]): AutoStopTarget[] {
+		const persisted = this.store.get(this.#record.id);
+		if (!persisted) {
+			return [];
+		}
+		const currentTargets = selectCurrentAutoStopTargets(
+			this.#record,
+			persisted,
+			targets,
+		);
+		for (const target of currentTargets) {
+			this.#record = this.store.completeAutoStop(this.#record.id, target.appId);
+			logger.info("presence", "Auto-stop target reached", {
+				account: this.#record.accountName,
+				app: target.appId,
+				targetHours: target.targetMinutes / 60,
+			});
+		}
+		return currentTargets;
+	}
+
+	#scheduleAutoStopCheck(
+		monitoringRevision: number,
+		presence: PresenceController,
+		client: SteamUser,
+		targets: readonly AutoStopTarget[],
+		playtimes: ReadonlyMap<number, number>,
+		boostingStartedAt: number,
+	): void {
+		this.#cancelAutoStopTimer();
+		const delayMs = calculateAutoStopCheckDelay(
+			targets,
+			playtimes,
+			performance.now() - boostingStartedAt,
+		);
+		this.#autoStopTimer = setTimeout(() => {
+			this.#autoStopTimer = null;
+			if (
+				!this.#isAutoStopMonitoringCurrent(monitoringRevision, presence, client)
+			) {
+				return;
+			}
+			const reached = findReachedAutoStopTargets(
+				targets,
+				playtimes,
+				performance.now() - boostingStartedAt,
+			);
+			if (reached.length === 0) {
+				this.#scheduleAutoStopCheck(
+					monitoringRevision,
+					presence,
+					client,
+					targets,
+					playtimes,
+					boostingStartedAt,
+				);
+				return;
+			}
+			if (this.#completeAutoStops(reached).length > 0) {
+				this.#applyPresence(false);
+			}
+		}, delayMs);
+	}
+
+	#scheduleAutoStopRetry(
+		monitoringRevision: number,
+		presence: PresenceController,
+		client: SteamUser,
+		retry: () => void,
 	): void {
 		this.#cancelAutoStopTimer();
 		this.#autoStopTimer = setTimeout(() => {
 			this.#autoStopTimer = null;
-			if (this.#isPresenceOperationCurrent(operation, presence, client)) {
-				this.#applyPresence();
+			if (
+				this.#isAutoStopMonitoringCurrent(monitoringRevision, presence, client)
+			) {
+				retry();
 			}
-		}, delayMs);
+		}, AUTO_STOP_RETRY_MS);
+	}
+
+	#resetAutoStopMonitoring(): void {
+		this.#autoStopMonitoringRevision += 1;
+		this.#cancelAutoStopTimer();
 	}
 
 	#cancelAutoStopTimer(): void {
@@ -692,6 +957,18 @@ export class AccountWorker {
 	): boolean {
 		return (
 			operation === this.#presenceOperation &&
+			presence === this.#presence &&
+			client === this.#client
+		);
+	}
+
+	#isAutoStopMonitoringCurrent(
+		monitoringRevision: number,
+		presence: PresenceController,
+		client: SteamUser,
+	): boolean {
+		return (
+			monitoringRevision === this.#autoStopMonitoringRevision &&
 			presence === this.#presence &&
 			client === this.#client
 		);
@@ -891,13 +1168,14 @@ export class AccountWorker {
 		const client = this.#client;
 		this.#generation += 1;
 		this.#presenceOperation += 1;
-		this.#cancelAutoStopTimer();
+		this.#resetAutoStopMonitoring();
 		this.#client = null;
 		this.#presence?.dispose();
 		this.#presence = null;
 		this.#cardFarming?.dispose();
 		this.#cardFarming = null;
 		this.#appliedPresenceMode = null;
+		this.#autoStopTargetsSuppressed = false;
 		this.#connecting = false;
 		if (!preserveWebSession) {
 			this.#webCookies = null;

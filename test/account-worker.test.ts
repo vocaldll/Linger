@@ -1,13 +1,44 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { Account } from "../src/domain/account.js";
 import {
 	AWAY_MESSAGE_COOLDOWN_MS,
 	AwayMessageCooldown,
 	assessProfileStatus,
 	calculateAutoStopCheckDelay,
 	extendEarlyRetryProtection,
+	findReachedAutoStopTargets,
 	guardWebLogOnAfterDisconnect,
+	presenceChanged,
+	selectCurrentAutoStopTargets,
 } from "../src/steam/account-worker.js";
+
+function account(overrides: Partial<Account> = {}): Account {
+	return {
+		id: "id",
+		accountName: "account",
+		steamId: "1",
+		refreshTokenEncrypted: "encrypted",
+		machineAuthTokenEncrypted: null,
+		appIds: [730, 440],
+		autoStopTargets: [],
+		customGame: null,
+		awayMessage: null,
+		visible: false,
+		clearRecentActivity: true,
+		cardFarmingEnabled: false,
+		cardFarmingQueue: [],
+		enabled: true,
+		revision: 1,
+		restartNonce: 0,
+		status: "online",
+		lastError: null,
+		lastConnectedAt: null,
+		createdAt: "2026-08-19T00:00:00.000Z",
+		updatedAt: "2026-08-19T00:00:00.000Z",
+		...overrides,
+	};
+}
 
 describe("Steam account worker", () => {
 	it("schedules the next auto-stop from current Steam minutes", () => {
@@ -22,6 +53,80 @@ describe("Steam account worker", () => {
 		assert.equal(
 			calculateAutoStopCheckDelay(targets, playtimes, 10_000),
 			50_000,
+		);
+	});
+
+	it("does not classify auto-stop target edits as presence changes", () => {
+		const previous = account();
+		const next = account({
+			autoStopTargets: [{ appId: 730, targetMinutes: 7_777 * 60 }],
+		});
+
+		assert.equal(presenceChanged(previous, next), false);
+		assert.equal(presenceChanged(previous, account({ appIds: [730] })), true);
+	});
+
+	it("reaches auto-stop targets from locally elapsed boosting time", () => {
+		const targets = [
+			{ appId: 730, targetMinutes: 100 },
+			{ appId: 440, targetMinutes: 200 },
+		];
+		const playtimes = new Map([
+			[730, 99],
+			[440, 198],
+		]);
+
+		assert.deepEqual(findReachedAutoStopTargets(targets, playtimes, 60_000), [
+			targets[0],
+		]);
+		assert.deepEqual(
+			findReachedAutoStopTargets(targets, playtimes, 120_000),
+			targets,
+		);
+	});
+
+	it("completes only targets from the current persisted configuration", () => {
+		const target = { appId: 730, targetMinutes: 100 };
+		const snapshot = account({ autoStopTargets: [target] });
+
+		assert.deepEqual(
+			selectCurrentAutoStopTargets(snapshot, snapshot, [target]),
+			[target],
+		);
+		assert.deepEqual(
+			selectCurrentAutoStopTargets(
+				snapshot,
+				account({ revision: 2, autoStopTargets: [target] }),
+				[target],
+			),
+			[target],
+		);
+		assert.deepEqual(
+			selectCurrentAutoStopTargets(
+				snapshot,
+				account({
+					revision: 2,
+					autoStopTargets: [{ ...target, targetMinutes: 200 }],
+				}),
+				[target],
+			),
+			[],
+		);
+		assert.deepEqual(
+			selectCurrentAutoStopTargets(
+				snapshot,
+				account({ autoStopTargets: [target], cardFarmingEnabled: true }),
+				[target],
+			),
+			[],
+		);
+		assert.deepEqual(
+			selectCurrentAutoStopTargets(
+				snapshot,
+				account({ appIds: [730], autoStopTargets: [target] }),
+				[target],
+			),
+			[],
 		);
 	});
 
