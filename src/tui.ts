@@ -346,8 +346,8 @@ async function promptGamePicker(
 
 async function promptConfiguration(
 	ownedGames: readonly OwnedGame[],
-	current?: AccountSetup,
-): Promise<AccountSetup | null> {
+	current?: AccountSetup & Pick<Account, "autoRestart">,
+): Promise<(AccountSetup & Pick<Account, "autoRestart">) | null> {
 	const cardFarmingEnabled = await confirm({
 		message:
 			"Farm all currently available Steam trading cards before hour boosting?",
@@ -388,6 +388,11 @@ async function promptConfiguration(
 		default: current?.visible ?? true,
 		theme: LINGER_THEME,
 	});
+	const autoRestart = await confirm({
+		message: "Automatically restart the Steam session after a disconnect?",
+		default: current?.autoRestart ?? true,
+		theme: LINGER_THEME,
+	});
 
 	return {
 		...games,
@@ -395,6 +400,7 @@ async function promptConfiguration(
 		visible,
 		clearRecentActivity,
 		cardFarmingEnabled,
+		autoRestart,
 	};
 }
 
@@ -527,6 +533,18 @@ async function promptRecentActivity(account: Account): Promise<boolean> {
 	});
 }
 
+async function promptAutoRestart(account: Account): Promise<boolean> {
+	const choices = [
+		{ name: "Enabled · reconnect after a disconnect", value: true },
+		{ name: "Disabled · wait for a manual restart", value: false },
+	];
+	return select({
+		message: `Auto Restart (current: ${account.autoRestart ? "enabled" : "disabled"})`,
+		theme: LINGER_THEME,
+		choices: account.autoRestart ? choices : choices.reverse(),
+	});
+}
+
 async function promptAwayMessage(account: Account): Promise<string | null> {
 	const value = await input({
 		message: `Away message (current: ${account.awayMessage ?? "disabled"}; blank keeps, "-" disables)`,
@@ -556,6 +574,7 @@ function accountSummary(account: Account): string {
 		"",
 		row("Steam ID", account.steamId ?? "unknown"),
 		row("Enabled", account.enabled ? "yes" : "no"),
+		row("Auto Restart", account.autoRestart ? "enabled" : "disabled"),
 		row("Visibility", account.visible ? "visible" : "invisible"),
 		row(
 			"Clear recent activity",
@@ -722,6 +741,10 @@ async function manageAccount(
 					value: "awayMessage",
 				},
 				{
+					name: `Auto Restart · ${account.autoRestart ? "enabled" : "disabled"}`,
+					value: "autoRestart",
+				},
+				{
 					name: `Card farming · ${account.cardFarmingEnabled ? `${account.cardFarmingQueue.length} queued` : "disabled"}`,
 					value: "cardFarming",
 				},
@@ -789,6 +812,17 @@ async function manageAccount(
 					account.awayMessage
 						? "Away message saved."
 						: "Away message disabled.",
+				);
+				break;
+			case "autoRestart":
+				account = store.setAutoRestart(
+					account.id,
+					await promptAutoRestart(account),
+				);
+				pauseMessage(
+					account.autoRestart
+						? "Auto Restart enabled. Future disconnects will reconnect automatically."
+						: "Auto Restart disabled. Future disconnects will wait for a manual restart.",
 				);
 				break;
 			case "cardFarming": {

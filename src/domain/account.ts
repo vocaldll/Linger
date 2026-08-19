@@ -25,6 +25,7 @@ export type Account = {
 	clearRecentActivity: boolean;
 	cardFarmingEnabled: boolean;
 	cardFarmingQueue: CardFarmingEntry[];
+	autoRestart: boolean;
 	enabled: boolean;
 	revision: number;
 	restartNonce: number;
@@ -50,6 +51,7 @@ export type NewAccount = Omit<
 	| "id"
 	| "awayMessage"
 	| "cardFarmingQueue"
+	| "autoRestart"
 	| "revision"
 	| "restartNonce"
 	| "status"
@@ -57,7 +59,7 @@ export type NewAccount = Omit<
 	| "lastConnectedAt"
 	| "createdAt"
 	| "updatedAt"
->;
+> & { autoRestart?: boolean };
 
 export type AccountConfiguration = Pick<
 	Account,

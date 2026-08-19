@@ -38,6 +38,7 @@ describe("AccountStore", () => {
 		});
 
 		assert.equal(store.getByName("VOCAL")?.id, account.id);
+		assert.equal(account.autoRestart, true);
 		const updated = store.updateConfiguration(account.id, {
 			appIds: [440, 570],
 			autoStopTargets: [],
@@ -57,6 +58,8 @@ describe("AccountStore", () => {
 		assert.equal(withAwayMessage.awayMessage, "I am away right now.");
 		assert.equal(withAwayMessage.revision, updated.revision + 1);
 		assert.equal(store.setAwayMessage(account.id, "  ").awayMessage, null);
+		assert.equal(store.setAutoRestart(account.id, false).autoRestart, false);
+		assert.equal(store.setAutoRestart(account.id, true).autoRestart, true);
 		store.close();
 	});
 
@@ -73,6 +76,7 @@ describe("AccountStore", () => {
 			visible: true,
 			clearRecentActivity: false,
 			cardFarmingEnabled: false,
+			autoRestart: true,
 			enabled: true,
 		});
 		const updated = store.updateRuntime(account.id, {
@@ -81,6 +85,37 @@ describe("AccountStore", () => {
 		});
 		assert.equal(updated.status, "online");
 		assert.equal(updated.revision, account.revision);
+		store.close();
+	});
+
+	it("preserves an opted-out disconnect across runner restarts", () => {
+		const store = createStore();
+		const account = store.create({
+			accountName: "manual-restart",
+			steamId: null,
+			refreshTokenEncrypted: "encrypted",
+			machineAuthTokenEncrypted: null,
+			appIds: [730],
+			autoStopTargets: [],
+			customGame: null,
+			visible: true,
+			clearRecentActivity: false,
+			cardFarmingEnabled: false,
+			autoRestart: false,
+			enabled: true,
+		});
+
+		store.updateRuntime(account.id, {
+			status: "backoff",
+			lastError: "Steam disconnected",
+		});
+		store.resetInterruptedStatuses();
+		assert.equal(store.get(account.id)?.status, "error");
+
+		store.setAutoRestart(account.id, true);
+		store.updateRuntime(account.id, { status: "backoff" });
+		store.resetInterruptedStatuses();
+		assert.equal(store.get(account.id)?.status, "idle");
 		store.close();
 	});
 
@@ -97,6 +132,7 @@ describe("AccountStore", () => {
 			visible: true,
 			clearRecentActivity: false,
 			cardFarmingEnabled: false,
+			autoRestart: true,
 			enabled: true,
 		});
 
@@ -154,6 +190,7 @@ describe("AccountStore", () => {
 			visible: true,
 			clearRecentActivity: false,
 			cardFarmingEnabled: false,
+			autoRestart: true,
 			enabled: true,
 		});
 
@@ -238,6 +275,7 @@ describe("AccountStore", () => {
 		assert.deepEqual(store.get("id")?.cardFarmingQueue, []);
 		assert.equal(store.get("id")?.awayMessage, null);
 		assert.deepEqual(store.get("id")?.autoStopTargets, []);
+		assert.equal(store.get("id")?.autoRestart, true);
 		assert.deepEqual([...store.listTrackedPlaytimes("id")], []);
 		store.close();
 	});
@@ -255,6 +293,7 @@ describe("AccountStore", () => {
 			visible: true,
 			clearRecentActivity: false,
 			cardFarmingEnabled: true,
+			autoRestart: true,
 			enabled: true,
 		});
 		store.replaceCardFarmingQueue(account.id, [
@@ -288,6 +327,7 @@ describe("AccountStore", () => {
 			visible: false,
 			clearRecentActivity: false,
 			cardFarmingEnabled: true,
+			autoRestart: true,
 			enabled: true,
 		});
 

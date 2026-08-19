@@ -38,6 +38,7 @@ function createAccount(store: AccountStore, appIds: number[]): Account {
 		visible: false,
 		clearRecentActivity: false,
 		cardFarmingEnabled: true,
+		autoRestart: true,
 		enabled: true,
 	});
 }

@@ -234,7 +234,10 @@ export class AccountWorker {
 		private readonly communityProfileStatus: CommunityProfileStatus = new SteamCommunityCardService(),
 	) {
 		this.#record = account;
-		if (account.status === "needs_auth") {
+		if (
+			account.status === "needs_auth" ||
+			(!account.autoRestart && account.status === "error")
+		) {
 			this.#retryAt = Number.POSITIVE_INFINITY;
 		}
 	}
@@ -253,6 +256,8 @@ export class AccountWorker {
 			previous.refreshTokenEncrypted !== next.refreshTokenEncrypted ||
 			previous.machineAuthTokenEncrypted !== next.machineAuthTokenEncrypted;
 		const restartRequested = previous.restartNonce !== next.restartNonce;
+		const autoRestartEnabled = !previous.autoRestart && next.autoRestart;
+		const autoRestartDisabled = previous.autoRestart && !next.autoRestart;
 		const targetsChanged = autoStopTargetsChanged(previous, next);
 		this.#record = next;
 		this.#cardFarming?.reconcile(next);
@@ -275,6 +280,22 @@ export class AccountWorker {
 
 		if (credentialsChanged || restartRequested) {
 			this.#disconnect();
+			this.#retryAt = 0;
+			this.#retryAttempt = 0;
+			this.#gameExitWait = null;
+			this.#earlyRetryProtectionUntil = 0;
+		} else if (
+			autoRestartDisabled &&
+			!this.#client &&
+			!this.#connecting &&
+			next.status === "backoff"
+		) {
+			this.#retryAt = Number.POSITIVE_INFINITY;
+			this.#gameExitWait = null;
+			this.#earlyRetryProtectionUntil = 0;
+			this.#webCookies = null;
+			this.#record = this.store.updateRuntime(next.id, { status: "error" });
+		} else if (autoRestartEnabled && !this.#client && !this.#connecting) {
 			this.#retryAt = 0;
 			this.#retryAttempt = 0;
 			this.#gameExitWait = null;
@@ -317,7 +338,11 @@ export class AccountWorker {
 	stop(): void {
 		this.#stopped = true;
 		this.#disconnect();
-		if (this.store.get(this.#record.id)?.enabled) {
+		const persisted = this.store.get(this.#record.id);
+		if (
+			persisted?.enabled &&
+			(persisted.autoRestart || persisted.status !== "error")
+		) {
 			this.store.updateRuntime(this.#record.id, { status: "idle" });
 		}
 	}
@@ -1047,6 +1072,22 @@ export class AccountWorker {
 				lastError: error.message,
 			});
 			logger.error("steam", "Reauthentication required", {
+				account: account.accountName,
+				error: error.message,
+			});
+			return;
+		}
+
+		if (!account.autoRestart) {
+			this.#retryAt = Number.POSITIVE_INFINITY;
+			this.#gameExitWait = null;
+			this.#earlyRetryProtectionUntil = 0;
+			this.#webCookies = null;
+			this.#record = this.store.updateRuntime(account.id, {
+				status: "error",
+				lastError: error.message,
+			});
+			logger.warn("steam", "Disconnected; automatic restart disabled", {
 				account: account.accountName,
 				error: error.message,
 			});

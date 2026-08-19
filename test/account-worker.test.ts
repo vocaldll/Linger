@@ -28,6 +28,7 @@ function account(overrides: Partial<Account> = {}): Account {
 		clearRecentActivity: true,
 		cardFarmingEnabled: false,
 		cardFarmingQueue: [],
+		autoRestart: true,
 		enabled: true,
 		revision: 1,
 		restartNonce: 0,

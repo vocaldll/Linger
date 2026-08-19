@@ -33,6 +33,7 @@ type AccountRow = {
 	clear_recent_activity: number;
 	card_farming_enabled: number;
 	card_farming_queue_json: string;
+	auto_restart: number;
 	enabled: number;
 	revision: number;
 	restart_nonce: number;
@@ -69,7 +70,7 @@ type LibraryRefreshRow = {
 const ACCOUNT_COLUMNS = `
   id, account_name, steam_id, refresh_token_encrypted, machine_auth_token_encrypted,
   app_ids_json, auto_stop_targets_json, custom_game, away_message, visible, clear_recent_activity, card_farming_enabled,
-  card_farming_queue_json, enabled, revision, restart_nonce, status,
+  card_farming_queue_json, auto_restart, enabled, revision, restart_nonce, status,
   last_error, last_connected_at, created_at, updated_at
 `;
 
@@ -126,6 +127,7 @@ function mapAccount(row: AccountRow): Account {
 		clearRecentActivity: row.clear_recent_activity === 1,
 		cardFarmingEnabled: row.card_farming_enabled === 1,
 		cardFarmingQueue: parseCardFarmingQueueJson(row.card_farming_queue_json),
+		autoRestart: row.auto_restart === 1,
 		enabled: row.enabled === 1,
 		revision: row.revision,
 		restartNonce: row.restart_nonce,
@@ -187,9 +189,9 @@ export class AccountStore {
         INSERT INTO accounts (
           id, account_name, steam_id, refresh_token_encrypted, machine_auth_token_encrypted,
           app_ids_json, auto_stop_targets_json, custom_game, visible, clear_recent_activity, card_farming_enabled,
-          card_farming_queue_json, enabled, revision, restart_nonce, status,
+          card_farming_queue_json, auto_restart, enabled, revision, restart_nonce, status,
           last_error, last_connected_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, 1, 0, ?, NULL, NULL, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, 1, 0, ?, NULL, NULL, ?, ?)
       `)
 			.run(
 				id,
@@ -203,6 +205,7 @@ export class AccountStore {
 				input.visible ? 1 : 0,
 				input.clearRecentActivity ? 1 : 0,
 				input.cardFarmingEnabled ? 1 : 0,
+				input.autoRestart !== false ? 1 : 0,
 				input.enabled ? 1 : 0,
 				input.enabled ? "idle" : "disabled",
 				now,
@@ -288,6 +291,18 @@ export class AccountStore {
         WHERE id = ?
       `)
 			.run(message?.trim() || null, new Date().toISOString(), id);
+		this.#assertChanged(result.changes, id);
+		return this.#require(id);
+	}
+
+	setAutoRestart(id: string, enabled: boolean): Account {
+		const result = this.#db
+			.prepare(`
+        UPDATE accounts
+        SET auto_restart = ?, revision = revision + 1, updated_at = ?
+        WHERE id = ?
+      `)
+			.run(enabled ? 1 : 0, new Date().toISOString(), id);
 		this.#assertChanged(result.changes, id);
 		return this.#require(id);
 	}
@@ -578,7 +593,11 @@ export class AccountStore {
 		this.#db
 			.prepare(`
         UPDATE accounts
-        SET status = CASE WHEN enabled = 1 THEN 'idle' ELSE 'disabled' END
+        SET status = CASE
+          WHEN enabled = 0 THEN 'disabled'
+          WHEN auto_restart = 0 AND status = 'backoff' THEN 'error'
+          ELSE 'idle'
+        END
         WHERE status IN ('connecting', 'online', 'backoff')
       `)
 			.run();
@@ -642,7 +661,7 @@ export class AccountStore {
 			user_version: number;
 		};
 		const version = versionRow.user_version;
-		if (version > 9) {
+		if (version > 10) {
 			throw new Error(
 				`Database schema ${version} is newer than this version of Linger supports`,
 			);
@@ -756,6 +775,14 @@ export class AccountStore {
         INSERT INTO tracked_playtimes (account_id, app_id, playtime_forever)
         SELECT account_id, app_id, playtime_forever FROM owned_games;
         PRAGMA user_version = 9;
+      `);
+		}
+
+		if (version <= 9) {
+			this.#db.exec(`
+        ALTER TABLE accounts ADD COLUMN auto_restart INTEGER NOT NULL DEFAULT 1
+          CHECK (auto_restart IN (0, 1));
+        PRAGMA user_version = 10;
       `);
 		}
 	}
