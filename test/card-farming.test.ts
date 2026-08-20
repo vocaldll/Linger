@@ -181,8 +181,10 @@ describe("card farming controller", () => {
 		const output: string[] = [];
 		const originalWrite = process.stdout.write;
 		const originalLogLevel = process.env.LINGER_LOG_LEVEL;
+		const originalNoColor = process.env.NO_COLOR;
 		let controller: CardFarmingController | null = null;
 		process.env.LINGER_LOG_LEVEL = "info";
+		process.env.NO_COLOR = "1";
 		process.stdout.write = ((chunk: string | Uint8Array) => {
 			output.push(chunk.toString());
 			return true;
@@ -213,6 +215,11 @@ describe("card farming controller", () => {
 				delete process.env.LINGER_LOG_LEVEL;
 			} else {
 				process.env.LINGER_LOG_LEVEL = originalLogLevel;
+			}
+			if (originalNoColor === undefined) {
+				delete process.env.NO_COLOR;
+			} else {
+				process.env.NO_COLOR = originalNoColor;
 			}
 			controller?.dispose();
 			store.close();
