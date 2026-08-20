@@ -13,6 +13,7 @@ Linger is a terminal-based Steam hour booster and card farmer with multi-account
 - Boost multiple games, set total-hour targets, and automatically farm card drops
 - Configure visibility, custom game titles, away messages, and recent activity
 - Recover disconnected sessions and apply configuration changes automatically
+- Inspect live activity, timers, farming progress, and errors across the fleet
 - Encrypt saved session tokens with a local master key
 
 ## Quick start
@@ -28,6 +29,14 @@ pnpm start
 
 Open the manager again at any time; the runner applies configuration changes automatically.
 
+Inspect the current fleet or open the live dashboard in another terminal:
+
+```sh
+node dist/src/cli.js status
+node dist/src/cli.js status --watch
+node dist/src/cli.js status --json
+```
+
 ## Docker
 
 Build the image, configure accounts, and start the service:
@@ -39,6 +48,8 @@ docker compose up -d
 ```
 
 Follow the runner logs with `docker compose logs -f linger`.
+
+Open the live fleet dashboard with `docker compose exec linger node dist/src/cli.js status --watch`.
 
 Compose stores `linger.sqlite`, `master.key`, and `steam-device-id` in the `linger-data` volume mounted at `/app/data`.
 
