@@ -106,17 +106,21 @@ describe("fleet status", () => {
 			width: 100,
 		}).split("\n");
 		const activityLine = lines.find((line) => line.includes("BOOSTING"));
+		const gameLine = lines.find((line) => line.includes("Counter-Strike 2"));
 		const detailLine = lines.find((line) =>
 			line.includes("library age unknown"),
 		);
 		assert.ok(activityLine);
+		assert.ok(gameLine);
 		assert.ok(detailLine);
+		assert.match(activityLine, /BOOSTING\s+1 game/u);
+		assert.notEqual(activityLine, gameLine);
 		assert.equal(
 			activityLine.indexOf("BOOSTING"),
 			detailLine.indexOf("session"),
 		);
 		assert.equal(
-			activityLine.indexOf("Counter-Strike 2"),
+			gameLine.indexOf("Counter-Strike 2"),
 			detailLine.indexOf("library age unknown"),
 		);
 		const narrow = formatFleetStatus(layoutFleet, {

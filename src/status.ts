@@ -445,10 +445,13 @@ function activityPresentation(
 	showToggleHint: boolean,
 ): ActivityPresentation {
 	const detail = activityDetail(account, now);
-	if (account.activity.kind !== "boosting" || detail.length <= maximum) {
+	if (account.activity.kind !== "boosting") {
 		return { detail, gameRows: [] };
 	}
 	const labels = boostingGameLabels(account.activity);
+	if (labels.length === 0) {
+		return { detail, gameRows: [] };
+	}
 	return {
 		detail: `${labels.length} ${labels.length === 1 ? "game" : "games"}`,
 		gameRows: expandedGames
