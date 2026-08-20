@@ -128,6 +128,45 @@ describe("fleet status", () => {
 		for (const line of narrow.split("\n")) {
 			assert.ok(line.length <= 40, `Line exceeds terminal width: ${line}`);
 		}
+
+		const manyGamesFleet = structuredClone(layoutFleet);
+		const manyGamesAccount = manyGamesFleet.accounts[0];
+		assert.ok(manyGamesAccount);
+		manyGamesAccount.activity.games = Array.from(
+			{ length: 14 },
+			(_, index) => ({
+				appId: index + 1,
+				name: `Game ${index + 1}`,
+			}),
+		);
+		const manyGames = formatFleetStatus(manyGamesFleet, {
+			color: false,
+			width: 80,
+			watch: true,
+		});
+		assert.match(manyGames, /BOOSTING\s+14 games/u);
+		assert.match(manyGames, /\+\d+ more \[g\]/u);
+		assert.match(manyGames, /g expand games/u);
+		assert.equal(
+			manyGames.split("\n").filter((line) => /Game \d+/u.test(line)).length,
+			1,
+		);
+		for (const line of manyGames.split("\n")) {
+			assert.ok(line.length <= 80, `Line exceeds terminal width: ${line}`);
+		}
+
+		const expandedGames = formatFleetStatus(manyGamesFleet, {
+			color: false,
+			width: 80,
+			watch: true,
+			expandedGames: true,
+		});
+		assert.doesNotMatch(expandedGames, /\+\d+ more/u);
+		assert.match(expandedGames, /Game 14/u);
+		assert.match(expandedGames, /g collapse games/u);
+		for (const line of expandedGames.split("\n")) {
+			assert.ok(line.length <= 80, `Line exceeds terminal width: ${line}`);
+		}
 		store.close();
 	});
 

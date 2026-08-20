@@ -69,6 +69,7 @@ type StatusFormatOptions = {
 	color: boolean;
 	width?: number;
 	watch?: boolean;
+	expandedGames?: boolean;
 };
 
 function secondsSince(timestamp: string, now: number): number {
@@ -309,6 +310,17 @@ function activityLabel(kind: StatusActivity["kind"]): string {
 	}[kind];
 }
 
+function boostingGameLabels(activity: StatusActivity): string[] {
+	const games = activity.games.map(gameLabel);
+	if (activity.customGame) {
+		const customGame = sanitize(activity.customGame);
+		if (customGame) {
+			games.push(customGame);
+		}
+	}
+	return games;
+}
+
 function activityColor(
 	kind: StatusActivity["kind"],
 ): (typeof PALETTE)[keyof typeof PALETTE] {
@@ -327,10 +339,7 @@ function activityColor(
 function activityDetail(account: AccountFleetStatus, now: number): string {
 	const activity = account.activity;
 	if (activity.kind === "boosting") {
-		const games = activity.games.map(gameLabel);
-		if (activity.customGame) {
-			games.push(activity.customGame);
-		}
+		const games = boostingGameLabels(activity);
 		return games.length > 0 ? games.join(", ") : "Applying presence";
 	}
 	if (activity.kind === "farming") {
@@ -401,6 +410,51 @@ function packDetails(values: readonly string[], maximum: number): string[] {
 		rows.push(current);
 	}
 	return rows;
+}
+
+function packGameLabels(
+	labels: readonly string[],
+	maximum: number,
+	showToggleHint = false,
+): string[] {
+	const safeLabels = labels.map(sanitize).filter(Boolean);
+	for (let visible = safeLabels.length; visible >= 0; visible -= 1) {
+		const hidden = safeLabels.length - visible;
+		const values = safeLabels.slice(0, visible);
+		if (hidden > 0) {
+			values.push(`+${hidden} more${showToggleHint ? " [g]" : ""}`);
+		}
+		const rows = packDetails(values, maximum);
+		if (rows.length <= 1) {
+			return rows;
+		}
+	}
+	return [];
+}
+
+type ActivityPresentation = {
+	detail: string;
+	gameRows: string[];
+};
+
+function activityPresentation(
+	account: AccountFleetStatus,
+	now: number,
+	maximum: number,
+	expandedGames: boolean,
+	showToggleHint: boolean,
+): ActivityPresentation {
+	const detail = activityDetail(account, now);
+	if (account.activity.kind !== "boosting" || detail.length <= maximum) {
+		return { detail, gameRows: [] };
+	}
+	const labels = boostingGameLabels(account.activity);
+	return {
+		detail: `${labels.length} ${labels.length === 1 ? "game" : "games"}`,
+		gameRows: expandedGames
+			? packDetails(labels, maximum)
+			: packGameLabels(labels, maximum, showToggleHint),
+	};
 }
 
 type SecondaryDetails = {
@@ -486,6 +540,13 @@ export function formatFleetStatus(
 		const stateColor = activityColor(account.activity.kind);
 		if (compact) {
 			const available = width - 5;
+			const presentation = activityPresentation(
+				account,
+				now,
+				available,
+				options.expandedGames === true,
+				options.watch === true,
+			);
 			const compactSecondary = secondaryDetails(account, now);
 			const compactDetails = packDetails(
 				[compactSecondary.state, ...compactSecondary.details],
@@ -502,11 +563,13 @@ export function formatFleetStatus(
 				`  ${paint("◆", color, stateColor)}  ${strongPaint(ellipsize(account.accountName, available), color, PALETTE.lilac)}`,
 				`  ${paint("│", color, PALETTE.plum)}  ${paint(ellipsize(activityLabel(account.activity.kind), available), color, stateColor)}`,
 			);
-			const detail = activityDetail(account, now);
-			if (detail) {
+			if (presentation.detail) {
 				lines.push(
-					`  ${paint("│", color, PALETTE.plum)}  ${ellipsize(detail, available)}`,
+					`  ${paint("│", color, PALETTE.plum)}  ${ellipsize(presentation.detail, available)}`,
 				);
+			}
+			for (const row of presentation.gameRows) {
+				lines.push(`  ${paint("│", color, PALETTE.plum)}  ${row}`);
 			}
 			for (const row of compactDetails) {
 				lines.push(
@@ -522,16 +585,25 @@ export function formatFleetStatus(
 		}
 		const name = ellipsize(account.accountName, nameWidth).padEnd(nameWidth);
 		const label = activityLabel(account.activity.kind).padEnd(stateWidth);
-		const detail = ellipsize(
-			activityDetail(account, now),
-			Math.max(10, width - detailColumn),
+		const detailWidth = Math.max(10, width - detailColumn);
+		const presentation = activityPresentation(
+			account,
+			now,
+			detailWidth,
+			options.expandedGames === true,
+			options.watch === true,
 		);
+		const detail = ellipsize(presentation.detail, detailWidth);
 		lines.push(
 			"",
 			`  ${paint("◆", color, stateColor)}  ${strongPaint(name, color, PALETTE.lilac)}  ${paint(label, color, stateColor)} ${detail}`.trimEnd(),
 		);
+		for (const row of presentation.gameRows) {
+			lines.push(
+				`  ${paint("│", color, PALETTE.plum)}  ${" ".repeat(nameWidth + 2 + stateWidth + 1)}${row}`.trimEnd(),
+			);
+		}
 		const secondary = secondaryDetails(account, now);
-		const detailWidth = Math.max(10, width - detailColumn);
 		const secondaryRows = packDetails(secondary.details, detailWidth);
 		const secondaryState = ellipsize(secondary.state, stateWidth).padEnd(
 			stateWidth,
@@ -558,8 +630,8 @@ export function formatFleetStatus(
 		"",
 		options.watch
 			? compact
-				? `  ${strongPaint("q", color, PALETTE.lilac)} ${paint("quit", color, PALETTE.mist)}  ${paint("· 1s refresh", color, PALETTE.mist)}`
-				: `  ${strongPaint("q", color, PALETTE.lilac)} ${paint("quit", color, PALETTE.mist)}  ${paint("· refreshes every second", color, PALETTE.mist)}`
+				? `  ${strongPaint("g", color, PALETTE.lilac)} ${paint(options.expandedGames ? "collapse" : "expand", color, PALETTE.mist)}  ${paint("·", color, PALETTE.mist)} ${strongPaint("q", color, PALETTE.lilac)} ${paint("quit", color, PALETTE.mist)}  ${paint("· 1s", color, PALETTE.mist)}`
+				: `  ${strongPaint("g", color, PALETTE.lilac)} ${paint(options.expandedGames ? "collapse games" : "expand games", color, PALETTE.mist)}  ${paint("·", color, PALETTE.mist)} ${strongPaint("q", color, PALETTE.lilac)} ${paint("quit", color, PALETTE.mist)}  ${paint("· refreshes every second", color, PALETTE.mist)}`
 			: `  ${paint(ellipsize(`Updated ${fleet.generatedAt}`, width - 4), color, PALETTE.mist)}`,
 		"",
 	);
@@ -598,6 +670,7 @@ export async function watchStatus(store: AccountStore): Promise<void> {
 	let timer: NodeJS.Timeout | null = null;
 	let resolveStop: (() => void) | null = null;
 	let rejectStop: ((error: unknown) => void) | null = null;
+	let expandedGames = false;
 	const stopped = new Promise<void>((resolve, reject) => {
 		resolveStop = resolve;
 		rejectStop = reject;
@@ -607,16 +680,24 @@ export async function watchStatus(store: AccountStore): Promise<void> {
 			color: useColor(process.stdout),
 			width: output.columns,
 			watch: true,
+			expandedGames,
 		});
 		output.write(`\u001b[H\u001b[2J${content}`);
 	};
 	const onInput = (chunk: Buffer): void => {
-		if (
-			[...chunk].some(
-				(byte) => byte === 3 || byte === 27 || byte === 81 || byte === 113,
-			)
-		) {
-			resolveStop?.();
+		for (const byte of chunk) {
+			if (byte === 3 || byte === 27 || byte === 81 || byte === 113) {
+				resolveStop?.();
+				return;
+			}
+			if (byte === 71 || byte === 103) {
+				expandedGames = !expandedGames;
+				try {
+					render();
+				} catch (error) {
+					rejectStop?.(error);
+				}
+			}
 		}
 	};
 	const onSignal = (): void => resolveStop?.();
