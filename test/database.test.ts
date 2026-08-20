@@ -325,6 +325,9 @@ describe("AccountStore", () => {
 		assert.equal(store.get("id")?.awayMessage, null);
 		assert.deepEqual(store.get("id")?.autoStopTargets, []);
 		assert.equal(store.get("id")?.autoRestart, true);
+		assert.deepEqual(store.get("id")?.cardFarmingExclusions, []);
+		assert.equal(store.get("id")?.cardFarmingPolicy, "manual");
+		assert.equal(store.get("id")?.cardFarmingRescan, false);
 		assert.deepEqual([...store.listTrackedPlaytimes("id")], []);
 		store.close();
 		const migrated = new DatabaseSync(databasePath, { readOnly: true });
@@ -334,7 +337,7 @@ describe("AccountStore", () => {
 					user_version: number;
 				}
 			).user_version,
-			11,
+			12,
 		);
 		assert.deepEqual(
 			migrated
@@ -344,6 +347,79 @@ describe("AccountStore", () => {
 			["account_id", "runner_owner_id", "snapshot_json", "recorded_at"],
 		);
 		migrated.close();
+	});
+
+	it("coordinates card-farming scans and persists a reviewed plan", () => {
+		const store = createStore();
+		const account = store.create({
+			accountName: "card-plan-test",
+			steamId: "76561198000000000",
+			refreshTokenEncrypted: "encrypted",
+			machineAuthTokenEncrypted: null,
+			appIds: [730],
+			autoStopTargets: [],
+			customGame: null,
+			visible: true,
+			clearRecentActivity: false,
+			cardFarmingEnabled: false,
+			autoRestart: true,
+			enabled: true,
+		});
+
+		assert.deepEqual(store.getCardFarmingScanState(account.id), {
+			requestedNonce: 0,
+			completedNonce: 0,
+			lastError: null,
+			results: [],
+			requestedAt: null,
+			lastAttemptAt: null,
+			lastSuccessAt: null,
+		});
+		const nonce = store.requestCardFarmingScan(account.id);
+		store.completeCardFarmingScan(
+			account.id,
+			nonce,
+			[
+				{ appId: 440, remainingDrops: 1 },
+				{ appId: 570, remainingDrops: 3 },
+			],
+			null,
+		);
+		assert.deepEqual(store.getCardFarmingScanState(account.id).results, [
+			{ appId: 440, remainingDrops: 1 },
+			{ appId: 570, remainingDrops: 3 },
+		]);
+
+		const planned = store.startCardFarming(
+			account.id,
+			[{ appId: 570, remainingDrops: 3 }],
+			[440],
+			"least_played",
+			true,
+		);
+		assert.equal(planned.cardFarmingEnabled, true);
+		assert.deepEqual(planned.cardFarmingQueue, [
+			{ appId: 570, remainingDrops: 3 },
+		]);
+		assert.deepEqual(planned.cardFarmingExclusions, [440]);
+		assert.equal(planned.cardFarmingPolicy, "least_played");
+		assert.equal(planned.cardFarmingRescan, true);
+		assert.throws(
+			() =>
+				store.startCardFarming(
+					account.id,
+					[{ appId: 570, remainingDrops: 3 }],
+					[570],
+					"manual",
+					false,
+				),
+			/both queued and excluded/u,
+		);
+		const stopped = store.setCardFarmingEnabled(account.id, false);
+		assert.deepEqual(stopped.cardFarmingExclusions, [440]);
+		assert.equal(stopped.cardFarmingPolicy, "least_played");
+		assert.equal(stopped.cardFarmingRescan, true);
+		store.close();
 	});
 
 	it("persists and completes per-game auto-stop targets", () => {

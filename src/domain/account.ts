@@ -25,6 +25,9 @@ export type Account = {
 	clearRecentActivity: boolean;
 	cardFarmingEnabled: boolean;
 	cardFarmingQueue: CardFarmingEntry[];
+	cardFarmingExclusions: number[];
+	cardFarmingPolicy: CardFarmingPolicy;
+	cardFarmingRescan: boolean;
 	autoRestart: boolean;
 	enabled: boolean;
 	revision: number;
@@ -46,11 +49,16 @@ export type CardFarmingEntry = {
 	remainingDrops: number;
 };
 
+export type CardFarmingPolicy = "manual" | "fewest_drops" | "least_played";
+
 export type NewAccount = Omit<
 	Account,
 	| "id"
 	| "awayMessage"
 	| "cardFarmingQueue"
+	| "cardFarmingExclusions"
+	| "cardFarmingPolicy"
+	| "cardFarmingRescan"
 	| "autoRestart"
 	| "revision"
 	| "restartNonce"
@@ -188,6 +196,19 @@ export function validateCardFarmingQueue(
 			throw new Error(`Duplicate card-farming AppID: ${entry.appId}`);
 		}
 		seen.add(entry.appId);
+	}
+}
+
+export function validateCardFarmingExclusions(appIds: readonly number[]): void {
+	const seen = new Set<number>();
+	for (const appId of appIds) {
+		if (!Number.isSafeInteger(appId) || appId <= 0 || appId > 0xffff_ffff) {
+			throw new Error(`Invalid card-farming exclusion: ${appId}`);
+		}
+		if (seen.has(appId)) {
+			throw new Error(`Duplicate card-farming exclusion: ${appId}`);
+		}
+		seen.add(appId);
 	}
 }
 

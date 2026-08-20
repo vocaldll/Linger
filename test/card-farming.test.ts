@@ -247,4 +247,120 @@ describe("card farming controller", () => {
 		assert.deepEqual(unchanged.cardFarmingQueue, []);
 		store.close();
 	});
+
+	it("completes preview scans without enabling card farming", async () => {
+		const store = createStore();
+		const enabled = createAccount(store, [730]);
+		const account = store.setCardFarmingEnabled(enabled.id, false);
+		const community = new FakeCommunity([{ appId: 440, remainingDrops: 2 }]);
+		const nonce = store.requestCardFarmingScan(account.id);
+		const controller = createController(store, account, community, []);
+
+		for (let attempt = 0; attempt < 20; attempt += 1) {
+			if (store.getCardFarmingScanState(account.id).completedNonce >= nonce) {
+				break;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		const scan = store.getCardFarmingScanState(account.id);
+		assert.equal(scan.completedNonce, nonce);
+		assert.deepEqual(scan.results, community.discovered);
+		assert.equal(store.get(account.id)?.cardFarmingEnabled, false);
+		controller.dispose();
+		store.close();
+	});
+
+	it("rescans the remaining queue after a game completes", async () => {
+		const store = createStore();
+		const created = createAccount(store, [730]);
+		store.replaceOwnedGames(created.id, [
+			{ appId: 440, name: "First", playtimeForever: 120 },
+			{ appId: 570, name: "Second", playtimeForever: 60 },
+			{ appId: 730, name: "New", playtimeForever: 0 },
+		]);
+		const account = store.startCardFarming(
+			created.id,
+			[
+				{ appId: 440, remainingDrops: 1 },
+				{ appId: 570, remainingDrops: 2 },
+			],
+			[],
+			"least_played",
+			true,
+		);
+		const community = new FakeCommunity([
+			{ appId: 440, remainingDrops: 1 },
+			{ appId: 570, remainingDrops: 2 },
+			{ appId: 730, remainingDrops: 3 },
+		]);
+		community.remaining.set(440, 0);
+		const controller = createController(store, account, community, []);
+
+		await controller.checkNow();
+		assert.deepEqual(store.get(account.id)?.cardFarmingQueue, [
+			{ appId: 730, remainingDrops: 3 },
+			{ appId: 570, remainingDrops: 2 },
+		]);
+		store.close();
+	});
+
+	it("preserves a concurrently reviewed manual order during a rescan", async () => {
+		const store = createStore();
+		const created = createAccount(store, [730]);
+		const account = store.startCardFarming(
+			created.id,
+			[
+				{ appId: 440, remainingDrops: 1 },
+				{ appId: 570, remainingDrops: 2 },
+				{ appId: 730, remainingDrops: 3 },
+			],
+			[],
+			"manual",
+			true,
+		);
+		let releaseDiscovery: (() => void) | undefined;
+		let discoveryStarted: (() => void) | undefined;
+		const started = new Promise<void>((resolve) => {
+			discoveryStarted = resolve;
+		});
+		const discoveryGate = new Promise<void>((resolve) => {
+			releaseDiscovery = resolve;
+		});
+		const community: CardCommunity = {
+			async discoverFarmableGames() {
+				discoveryStarted?.();
+				await discoveryGate;
+				return [
+					{ appId: 570, remainingDrops: 2 },
+					{ appId: 730, remainingDrops: 3 },
+				];
+			},
+			async getRemainingDrops() {
+				return 0;
+			},
+		};
+		const controller = createController(store, account, community, []);
+
+		const check = controller.checkNow();
+		await started;
+		store.startCardFarming(
+			account.id,
+			[
+				{ appId: 440, remainingDrops: 1 },
+				{ appId: 730, remainingDrops: 3 },
+				{ appId: 570, remainingDrops: 2 },
+			],
+			[],
+			"manual",
+			true,
+		);
+		releaseDiscovery?.();
+		await check;
+
+		assert.deepEqual(store.get(account.id)?.cardFarmingQueue, [
+			{ appId: 730, remainingDrops: 3 },
+			{ appId: 570, remainingDrops: 2 },
+		]);
+		store.close();
+	});
 });

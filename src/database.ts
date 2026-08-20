@@ -8,6 +8,7 @@ import type {
 	AccountStatus,
 	AutoStopTarget,
 	CardFarmingEntry,
+	CardFarmingPolicy,
 	NewAccount,
 	RuntimePatch,
 } from "./domain/account.js";
@@ -15,6 +16,7 @@ import {
 	hasNormalPresence,
 	validateAccountSetup,
 	validateAutoStopTargets,
+	validateCardFarmingExclusions,
 	validateCardFarmingQueue,
 } from "./domain/account.js";
 import type { OwnedGame } from "./domain/game-library.js";
@@ -38,6 +40,9 @@ type AccountRow = {
 	clear_recent_activity: number;
 	card_farming_enabled: number;
 	card_farming_queue_json: string;
+	card_farming_exclusions_json: string;
+	card_farming_policy: CardFarmingPolicy;
+	card_farming_rescan: number;
 	auto_restart: number;
 	enabled: number;
 	revision: number;
@@ -69,6 +74,26 @@ export type LibraryRefreshState = {
 	lastSuccessAt: string | null;
 };
 
+export type CardFarmingScanState = {
+	requestedNonce: number;
+	completedNonce: number;
+	lastError: string | null;
+	results: CardFarmingEntry[];
+	requestedAt: string | null;
+	lastAttemptAt: string | null;
+	lastSuccessAt: string | null;
+};
+
+type CardFarmingScanRow = {
+	requested_nonce: number;
+	completed_nonce: number;
+	last_error: string | null;
+	results_json: string;
+	requested_at: string | null;
+	last_attempt_at: string | null;
+	last_success_at: string | null;
+};
+
 type LibraryRefreshRow = {
 	requested_nonce: number;
 	completed_nonce: number;
@@ -93,7 +118,8 @@ export type RunnerLease = {
 const ACCOUNT_COLUMNS = `
   id, account_name, steam_id, refresh_token_encrypted, machine_auth_token_encrypted,
   app_ids_json, auto_stop_targets_json, custom_game, away_message, visible, clear_recent_activity, card_farming_enabled,
-  card_farming_queue_json, auto_restart, enabled, revision, restart_nonce, status,
+  card_farming_queue_json, card_farming_exclusions_json, card_farming_policy, card_farming_rescan,
+  auto_restart, enabled, revision, restart_nonce, status,
   last_error, last_connected_at, created_at, updated_at
 `;
 
@@ -116,6 +142,16 @@ function parseCardFarmingQueueJson(value: string): CardFarmingEntry[] {
 	const queue = parsed as CardFarmingEntry[];
 	validateCardFarmingQueue(queue);
 	return queue;
+}
+
+function parseCardFarmingExclusionsJson(value: string): number[] {
+	const parsed: unknown = JSON.parse(value);
+	if (!Array.isArray(parsed)) {
+		throw new Error("Stored account has invalid card-farming exclusions");
+	}
+	const exclusions = parsed as number[];
+	validateCardFarmingExclusions(exclusions);
+	return exclusions;
 }
 
 function parseAutoStopTargetsJson(
@@ -150,6 +186,11 @@ function mapAccount(row: AccountRow): Account {
 		clearRecentActivity: row.clear_recent_activity === 1,
 		cardFarmingEnabled: row.card_farming_enabled === 1,
 		cardFarmingQueue: parseCardFarmingQueueJson(row.card_farming_queue_json),
+		cardFarmingExclusions: parseCardFarmingExclusionsJson(
+			row.card_farming_exclusions_json,
+		),
+		cardFarmingPolicy: row.card_farming_policy,
+		cardFarmingRescan: row.card_farming_rescan === 1,
 		autoRestart: row.auto_restart === 1,
 		enabled: row.enabled === 1,
 		revision: row.revision,
@@ -212,9 +253,10 @@ export class AccountStore {
         INSERT INTO accounts (
           id, account_name, steam_id, refresh_token_encrypted, machine_auth_token_encrypted,
           app_ids_json, auto_stop_targets_json, custom_game, visible, clear_recent_activity, card_farming_enabled,
-          card_farming_queue_json, auto_restart, enabled, revision, restart_nonce, status,
+          card_farming_queue_json, card_farming_exclusions_json, card_farming_policy, card_farming_rescan,
+          auto_restart, enabled, revision, restart_nonce, status,
           last_error, last_connected_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, 1, 0, ?, NULL, NULL, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', 'manual', 0, ?, ?, 1, 0, ?, NULL, NULL, ?, ?)
       `)
 			.run(
 				id,
@@ -371,6 +413,48 @@ export class AccountStore {
 						? "online"
 						: "idle"
 					: "disabled",
+				new Date().toISOString(),
+				id,
+			);
+		this.#assertChanged(result.changes, id);
+		return this.#require(id);
+	}
+
+	startCardFarming(
+		id: string,
+		queue: readonly CardFarmingEntry[],
+		exclusions: readonly number[],
+		policy: CardFarmingPolicy,
+		rescan: boolean,
+	): Account {
+		if (queue.length === 0) {
+			throw new Error("Select at least one farmable game");
+		}
+		validateCardFarmingQueue(queue);
+		validateCardFarmingExclusions(exclusions);
+		const queuedAppIds = new Set(queue.map((entry) => entry.appId));
+		const overlappingAppId = exclusions.find((appId) =>
+			queuedAppIds.has(appId),
+		);
+		if (overlappingAppId !== undefined) {
+			throw new Error(
+				`Card-farming AppID ${overlappingAppId} cannot be both queued and excluded`,
+			);
+		}
+		const result = this.#db
+			.prepare(`
+				UPDATE accounts
+				SET card_farming_enabled = 1, card_farming_queue_json = ?,
+				    card_farming_exclusions_json = ?, card_farming_policy = ?, card_farming_rescan = ?,
+				    enabled = 1, status = CASE WHEN status = 'online' THEN 'online' ELSE 'idle' END,
+				    last_error = NULL, revision = revision + 1, updated_at = ?
+				WHERE id = ?
+			`)
+			.run(
+				JSON.stringify(queue),
+				JSON.stringify(exclusions),
+				policy,
+				rescan ? 1 : 0,
 				new Date().toISOString(),
 				id,
 			);
@@ -639,6 +723,95 @@ export class AccountStore {
 			);
 	}
 
+	requestCardFarmingScan(accountId: string): number {
+		if (!this.get(accountId)) {
+			throw new Error(`Account not found: ${accountId}`);
+		}
+		const requestedAt = new Date().toISOString();
+		this.#db
+			.prepare(`
+				INSERT INTO card_farming_scan_requests (
+				  account_id, requested_nonce, completed_nonce, last_error, results_json, requested_at
+				) VALUES (?, 1, 0, NULL, '[]', ?)
+				ON CONFLICT(account_id) DO UPDATE SET
+				  requested_nonce = requested_nonce + 1,
+				  last_error = NULL,
+				  requested_at = excluded.requested_at
+			`)
+			.run(accountId, requestedAt);
+		return this.getCardFarmingScanState(accountId).requestedNonce;
+	}
+
+	getCardFarmingScanState(accountId: string): CardFarmingScanState {
+		const row = this.#db
+			.prepare(`
+				SELECT requested_nonce, completed_nonce, last_error, results_json,
+				       requested_at, last_attempt_at, last_success_at
+				FROM card_farming_scan_requests
+				WHERE account_id = ?
+			`)
+			.get(accountId) as CardFarmingScanRow | undefined;
+		if (!row) {
+			return {
+				requestedNonce: 0,
+				completedNonce: 0,
+				lastError: null,
+				results: [],
+				requestedAt: null,
+				lastAttemptAt: null,
+				lastSuccessAt: null,
+			};
+		}
+		return {
+			requestedNonce: row.requested_nonce,
+			completedNonce: row.completed_nonce,
+			lastError: row.last_error,
+			results: parseCardFarmingQueueJson(row.results_json),
+			requestedAt: row.requested_at,
+			lastAttemptAt: row.last_attempt_at,
+			lastSuccessAt: row.last_success_at,
+		};
+	}
+
+	completeCardFarmingScan(
+		accountId: string,
+		requestedNonce: number,
+		results: readonly CardFarmingEntry[],
+		lastError: string | null,
+	): void {
+		validateCardFarmingQueue(results);
+		const attemptedAt = new Date().toISOString();
+		this.#db
+			.prepare(`
+				INSERT INTO card_farming_scan_requests (
+				  account_id, requested_nonce, completed_nonce, last_error, results_json,
+				  requested_at, last_attempt_at, last_success_at
+				)
+				SELECT ?, ?, ?, ?, ?, NULL, ?, ?
+				WHERE EXISTS (SELECT 1 FROM accounts WHERE id = ?)
+				ON CONFLICT(account_id) DO UPDATE SET
+				  completed_nonce = excluded.completed_nonce,
+				  last_error = excluded.last_error,
+				  results_json = excluded.results_json,
+				  last_attempt_at = excluded.last_attempt_at,
+				  last_success_at = COALESCE(
+				    excluded.last_success_at,
+				    card_farming_scan_requests.last_success_at
+				  )
+				WHERE excluded.completed_nonce >= card_farming_scan_requests.completed_nonce
+			`)
+			.run(
+				accountId,
+				requestedNonce,
+				requestedNonce,
+				lastError,
+				JSON.stringify(results),
+				attemptedAt,
+				lastError === null ? attemptedAt : null,
+				accountId,
+			);
+	}
+
 	writeRuntimeSnapshot(
 		accountId: string,
 		runnerOwnerId: string,
@@ -780,7 +953,7 @@ export class AccountStore {
 			user_version: number;
 		};
 		const version = versionRow.user_version;
-		if (version > 11) {
+		if (version > 12) {
 			throw new Error(
 				`Database schema ${version} is newer than this version of Linger supports`,
 			);
@@ -920,6 +1093,34 @@ export class AccountStore {
 				);
 				PRAGMA user_version = 11;
 			`);
+				this.#db.exec("COMMIT");
+			} catch (error) {
+				this.#db.exec("ROLLBACK");
+				throw error;
+			}
+		}
+
+		if (version <= 11) {
+			this.#db.exec("BEGIN IMMEDIATE");
+			try {
+				this.#db.exec(`
+					ALTER TABLE accounts ADD COLUMN card_farming_exclusions_json TEXT NOT NULL DEFAULT '[]';
+					ALTER TABLE accounts ADD COLUMN card_farming_policy TEXT NOT NULL DEFAULT 'manual'
+					  CHECK (card_farming_policy IN ('manual', 'fewest_drops', 'least_played'));
+					ALTER TABLE accounts ADD COLUMN card_farming_rescan INTEGER NOT NULL DEFAULT 0
+					  CHECK (card_farming_rescan IN (0, 1));
+					CREATE TABLE card_farming_scan_requests (
+					  account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+					  requested_nonce INTEGER NOT NULL,
+					  completed_nonce INTEGER NOT NULL,
+					  last_error TEXT,
+					  results_json TEXT NOT NULL DEFAULT '[]',
+					  requested_at TEXT,
+					  last_attempt_at TEXT,
+					  last_success_at TEXT
+					);
+					PRAGMA user_version = 12;
+				`);
 				this.#db.exec("COMMIT");
 			} catch (error) {
 				this.#db.exec("ROLLBACK");

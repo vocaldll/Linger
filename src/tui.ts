@@ -8,14 +8,17 @@ import type {
 	AccountConfiguration,
 	AccountSetup,
 	AutoStopTarget,
+	CardFarmingEntry,
 } from "./domain/account.js";
 import {
+	hasNormalPresence,
 	MAX_CUSTOM_GAME_LENGTH,
 	MAX_GAMES_PLAYED,
 	parseAppIds,
 	RECENT_ACTIVITY_RESERVED_SLOTS,
 	validateAccountSetup,
 } from "./domain/account.js";
+import { buildCardFarmingQueue } from "./domain/card-farming.js";
 import {
 	formatExactPlaytime,
 	GAME_SORT_LABELS,
@@ -31,6 +34,7 @@ import {
 } from "./steam/authentication.js";
 import { fetchOwnedGamesForLogin } from "./steam/game-library.js";
 import type { SteamMachineIdentity } from "./steam/machine-identity.js";
+import { cardFarmingPlanner } from "./tui/card-farming-planner.js";
 import { gamePicker } from "./tui/game-picker.js";
 import { LINGER_THEME, printLingerHeader, ui } from "./tui/theme.js";
 
@@ -46,6 +50,8 @@ const STATUS_LABELS: Record<Account["status"], string> = {
 
 const LIBRARY_REFRESH_TIMEOUT_MS = 30_000;
 const LIBRARY_REFRESH_POLL_INTERVAL_MS = 200;
+const CARD_FARMING_SCAN_TIMEOUT_MS = 2 * 60_000;
+const CARD_FARMING_SCAN_POLL_INTERVAL_MS = 200;
 
 type SearchableAccount = Pick<Account, "accountName" | "steamId" | "status">;
 
@@ -349,8 +355,7 @@ async function promptConfiguration(
 	current?: AccountSetup & Pick<Account, "autoRestart">,
 ): Promise<(AccountSetup & Pick<Account, "autoRestart">) | null> {
 	const cardFarmingEnabled = await confirm({
-		message:
-			"Farm all currently available Steam trading cards before hour boosting?",
+		message: "Open the card-farming planner after account setup?",
 		default: current?.cardFarmingEnabled ?? false,
 		theme: LINGER_THEME,
 	});
@@ -509,6 +514,139 @@ async function refreshOwnedGames(
 	);
 }
 
+async function scanCardFarmingGames(
+	store: AccountStore,
+	accountId: string,
+): Promise<CardFarmingEntry[]> {
+	const account = store.get(accountId);
+	if (!account) {
+		throw new Error(`Account not found: ${accountId}`);
+	}
+	if (!store.hasActiveRunner()) {
+		throw new Error("Start the runner before scanning for card drops.");
+	}
+	if (account.status === "needs_auth") {
+		throw new Error(
+			"Re-authenticate this account before scanning for card drops.",
+		);
+	}
+	if (account.status === "error" && account.lastError) {
+		throw new Error(`Could not connect to Steam: ${account.lastError}`);
+	}
+
+	const requestedNonce = store.requestCardFarmingScan(accountId);
+	const failScan = (message: string): never => {
+		store.completeCardFarmingScan(accountId, requestedNonce, [], message);
+		throw new Error(message);
+	};
+	const deadline = Date.now() + CARD_FARMING_SCAN_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		const scan = store.getCardFarmingScanState(accountId);
+		if (scan.completedNonce >= requestedNonce) {
+			if (scan.lastError) {
+				throw new Error(`Could not scan Steam card drops: ${scan.lastError}`);
+			}
+			return scan.results;
+		}
+		const latest = store.get(accountId);
+		if (!latest) {
+			return failScan("The account was removed before the scan finished.");
+		}
+		if (latest.status === "needs_auth") {
+			return failScan(
+				"Steam needs a fresh login. Re-authenticate this account and scan again.",
+			);
+		}
+		if (latest.status === "error" && latest.lastError) {
+			return failScan(`Could not connect to Steam: ${latest.lastError}`);
+		}
+		if (!store.hasActiveRunner()) {
+			return failScan("The runner stopped before the card-drop scan finished.");
+		}
+		await delay(CARD_FARMING_SCAN_POLL_INTERVAL_MS);
+	}
+	return failScan(
+		"The card-drop scan did not finish within two minutes. Farming was not started.",
+	);
+}
+
+function updateCardFarmingExclusions(
+	existing: readonly number[],
+	discovered: readonly CardFarmingEntry[],
+	queue: readonly CardFarmingEntry[],
+): number[] {
+	const exclusions = new Set(existing);
+	const selected = new Set(queue.map((entry) => entry.appId));
+	for (const entry of discovered) {
+		if (selected.has(entry.appId)) {
+			exclusions.delete(entry.appId);
+		} else {
+			exclusions.add(entry.appId);
+		}
+	}
+	return [...exclusions].sort((left, right) => left - right);
+}
+
+async function promptCardFarmingPlan(
+	store: AccountStore,
+	account: Account,
+): Promise<Account | null> {
+	let discovered: CardFarmingEntry[];
+	pauseMessage("Scanning Steam for remaining card drops...");
+	discovered = await scanCardFarmingGames(store, account.id);
+	let exclusions = [...account.cardFarmingExclusions];
+	let policy = account.cardFarmingPolicy;
+	let rescanAfterCompletion = account.cardFarmingRescan;
+	let queue = buildCardFarmingQueue(
+		discovered,
+		exclusions,
+		policy,
+		store.listOwnedGames(account.id),
+		account.cardFarmingQueue.map((entry) => entry.appId),
+	);
+	const wasFarming = account.enabled && account.cardFarmingEnabled;
+
+	while (true) {
+		const result = await cardFarmingPlanner(
+			{
+				discovered,
+				ownedGames: store.listOwnedGames(account.id),
+				initialQueue: queue,
+				initialPolicy: policy,
+				initialRescanAfterCompletion: rescanAfterCompletion,
+				submitLabel: wasFarming ? "save queue" : "start",
+			},
+			{ clearPromptOnDone: true },
+		);
+		queue = result.queue;
+		policy = result.policy;
+		rescanAfterCompletion = result.rescanAfterCompletion;
+		if (result.action === "cancel") {
+			return null;
+		}
+		exclusions = updateCardFarmingExclusions(exclusions, discovered, queue);
+		if (result.action === "rescan") {
+			pauseMessage("Scanning Steam for remaining card drops...");
+			discovered = await scanCardFarmingGames(store, account.id);
+			queue = buildCardFarmingQueue(
+				discovered,
+				exclusions,
+				policy,
+				store.listOwnedGames(account.id),
+				queue.map((entry) => entry.appId),
+			);
+			continue;
+		}
+		return store.startCardFarming(
+			account.id,
+			queue,
+			exclusions,
+			policy,
+			rescanAfterCompletion,
+		);
+	}
+}
+
 async function promptVisibility(account: Account): Promise<boolean> {
 	const choices = [
 		{ name: "Visible · show online and playing", value: true },
@@ -663,7 +801,7 @@ async function addAccount(
 		pauseMessage("Account setup cancelled.");
 		return;
 	}
-	const account = store.create({
+	let account = store.create({
 		accountName: login.accountName,
 		steamId: login.steamId,
 		refreshTokenEncrypted: vault.encrypt(login.refreshToken),
@@ -671,11 +809,38 @@ async function addAccount(
 			? vault.encrypt(login.machineAuthToken)
 			: null,
 		...configuration,
-		enabled: true,
+		enabled: !configuration.cardFarmingEnabled,
 	});
 	store.replaceOwnedGames(account.id, ownedGames);
+	if (configuration.cardFarmingEnabled) {
+		try {
+			const planned = await promptCardFarmingPlan(store, account);
+			if (planned) {
+				account = planned;
+				pauseMessage(
+					`Card farming started with ${account.cardFarmingQueue.length} queued game${account.cardFarmingQueue.length === 1 ? "" : "s"}.`,
+				);
+			} else {
+				account = store.setCardFarmingEnabled(account.id, false);
+				if (hasNormalPresence(account)) {
+					account = store.setEnabled(account.id, true);
+				}
+				pauseMessage("Farming was not started. The account was still added.");
+			}
+		} catch (error) {
+			account = store.setCardFarmingEnabled(account.id, false);
+			if (hasNormalPresence(account)) {
+				account = store.setEnabled(account.id, true);
+			}
+			pauseMessage(
+				`Could not open the card-farming planner: ${error instanceof Error ? error.message : String(error)}\nThe account was added without card farming.`,
+			);
+		}
+	}
 	pauseMessage(
-		`Added ${account.accountName}. The runner will connect it automatically.`,
+		account.enabled
+			? `Added ${account.accountName}. The runner will connect it automatically.`
+			: `Added ${account.accountName}. It remains disabled until card farming or normal boosting is configured.`,
 	);
 }
 
@@ -826,27 +991,64 @@ async function manageAccount(
 				);
 				break;
 			case "cardFarming": {
-				const change = await confirm({
-					message: account.cardFarmingEnabled
-						? "Stop card farming and return to normal hour boosting?"
-						: "Farm every game with card drops currently available?",
-					default: !account.cardFarmingEnabled,
-					theme: LINGER_THEME,
-				});
-				if (!change) {
-					pauseMessage("No changes saved.");
+				const wasFarming = account.enabled && account.cardFarmingEnabled;
+				if (account.cardFarmingEnabled) {
+					const action = await select({
+						message: "Card farming",
+						theme: LINGER_THEME,
+						choices: [
+							{ name: "Review and rescan queue", value: "plan" as const },
+							{ name: "Stop card farming", value: "stop" as const },
+							{ name: "Back", value: "back" as const },
+						],
+					});
+					if (action === "back") {
+						pauseMessage("No changes saved.");
+						break;
+					}
+					if (action === "stop") {
+						if (
+							!(await confirm({
+								message:
+									"Stop card farming and return to normal hour boosting?",
+								default: false,
+								theme: LINGER_THEME,
+							}))
+						) {
+							pauseMessage("No changes saved.");
+							break;
+						}
+						account = store.setCardFarmingEnabled(account.id, false);
+						pauseMessage(
+							account.enabled
+								? "Card farming disabled. Normal hour boosting will resume."
+								: "Card farming disabled. The account had no boosted games and was disabled.",
+						);
+						break;
+					}
+				}
+				let planned: Account | null;
+				try {
+					planned = await promptCardFarmingPlan(store, account);
+				} catch (error) {
+					pauseMessage(
+						`Could not open the card-farming planner: ${error instanceof Error ? error.message : String(error)}`,
+					);
 					break;
 				}
-				account = store.setCardFarmingEnabled(
-					account.id,
-					!account.cardFarmingEnabled,
-				);
+				if (!planned) {
+					pauseMessage(
+						wasFarming
+							? "No changes saved. The current farming queue is unchanged."
+							: "Farming was not started. Exclusions were not changed.",
+					);
+					break;
+				}
+				account = planned;
 				pauseMessage(
-					account.cardFarmingEnabled
-						? "Card farming enabled. Linger will scan Steam and begin automatically."
-						: account.enabled
-							? "Card farming disabled. Normal hour boosting will resume."
-							: "Card farming disabled. The account had no boosted games and was disabled.",
+					wasFarming
+						? `Card-farming queue updated with ${account.cardFarmingQueue.length} game${account.cardFarmingQueue.length === 1 ? "" : "s"}.`
+						: `Card farming started with ${account.cardFarmingQueue.length} queued game${account.cardFarmingQueue.length === 1 ? "" : "s"}.`,
 				);
 				break;
 			}

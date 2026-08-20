@@ -1,5 +1,6 @@
 import type { AccountStore } from "../database.js";
 import type { Account } from "../domain/account.js";
+import { buildCardFarmingQueue } from "../domain/card-farming.js";
 import { logger } from "../logger.js";
 import {
 	type CardCommunity,
@@ -13,7 +14,12 @@ const ITEM_EVENT_DEBOUNCE_MS = 5_000;
 
 type CardFarmingStore = Pick<
 	AccountStore,
-	"get" | "listOwnedGames" | "replaceCardFarmingQueue" | "finishCardFarming"
+	| "get"
+	| "listOwnedGames"
+	| "replaceCardFarmingQueue"
+	| "finishCardFarming"
+	| "getCardFarmingScanState"
+	| "completeCardFarmingScan"
 >;
 
 type CardFarmingCallbacks = {
@@ -32,6 +38,7 @@ export class CardFarmingController {
 	#disposed = false;
 	#activityAnnounced = false;
 	#nextCheckAt: number | null = null;
+	#scanInFlight = false;
 
 	constructor(
 		private readonly store: CardFarmingStore,
@@ -52,6 +59,7 @@ export class CardFarmingController {
 		const stopped =
 			wasActive && (!account.enabled || !account.cardFarmingEnabled);
 		this.#record = account;
+		this.#scanIfRequested();
 		if (!account.enabled || !account.cardFarmingEnabled) {
 			const scheduleChanged = this.#cancelTimer();
 			if (scheduleChanged) {
@@ -79,6 +87,7 @@ export class CardFarmingController {
 
 	setWebSession(cookies: readonly string[]): void {
 		this.#cookies = [...cookies];
+		this.#scanIfRequested();
 		if (this.#record.enabled && this.#record.cardFarmingEnabled) {
 			this.#announceResume();
 			this.#schedule(0);
@@ -170,23 +179,26 @@ export class CardFarmingController {
 			) {
 				return;
 			}
-			const firstDiscovered = discovered[0];
+			const queue = buildCardFarmingQueue(
+				discovered,
+				current.cardFarmingExclusions,
+				current.cardFarmingPolicy,
+				this.store.listOwnedGames(current.id),
+			);
+			const firstDiscovered = queue[0];
 			if (firstDiscovered === undefined) {
 				this.#finish(current);
 				return;
 			}
 
-			const updated = this.store.replaceCardFarmingQueue(
-				current.id,
-				discovered,
-			);
+			const updated = this.store.replaceCardFarmingQueue(current.id, queue);
 			this.#publish(updated);
 			this.#activityAnnounced = true;
 			logger.info("cards", "Farming started", {
 				account: updated.accountName,
 				...this.#gameFields(firstDiscovered.appId),
 				drops: firstDiscovered.remainingDrops,
-				queued: discovered.length,
+				queued: queue.length,
 			});
 			this.callbacks.applyPresence(updated);
 			this.#schedule(REGULAR_CHECK_INTERVAL_MS);
@@ -228,7 +240,26 @@ export class CardFarmingController {
 			return;
 		}
 
-		const nextQueue = current.cardFarmingQueue.slice(1);
+		let nextQueue = current.cardFarmingQueue.slice(1);
+		if (current.cardFarmingRescan) {
+			const discovered = await this.community.discoverFarmableGames(cookies);
+			const rescanned = this.store.get(current.id);
+			if (
+				!rescanned?.enabled ||
+				!rescanned.cardFarmingEnabled ||
+				rescanned.cardFarmingQueue[0]?.appId !== active.appId
+			) {
+				return;
+			}
+			nextQueue = buildCardFarmingQueue(
+				discovered,
+				rescanned.cardFarmingExclusions,
+				rescanned.cardFarmingPolicy,
+				this.store.listOwnedGames(rescanned.id),
+				rescanned.cardFarmingQueue.slice(1).map((entry) => entry.appId),
+				[active.appId],
+			);
+		}
 		const next = nextQueue[0];
 		if (next === undefined) {
 			logger.info("cards", "Game complete", {
@@ -287,6 +318,55 @@ export class CardFarmingController {
 			drops: active.remainingDrops,
 			queued: this.#record.cardFarmingQueue.length,
 		});
+	}
+
+	#scanIfRequested(): void {
+		if (this.#disposed || this.#scanInFlight || !this.#cookies) {
+			return;
+		}
+		const scan = this.store.getCardFarmingScanState(this.#record.id);
+		if (scan.requestedNonce <= scan.completedNonce) {
+			return;
+		}
+		this.#scanInFlight = true;
+		void this.#completeScan(scan.requestedNonce);
+	}
+
+	async #completeScan(requestedNonce: number): Promise<void> {
+		try {
+			const cookies = this.#cookies;
+			if (!cookies) {
+				return;
+			}
+			const discovered = await this.community.discoverFarmableGames(cookies);
+			if (!this.#disposed) {
+				this.store.completeCardFarmingScan(
+					this.#record.id,
+					requestedNonce,
+					discovered,
+					null,
+				);
+			}
+		} catch (error) {
+			if (!this.#disposed) {
+				const message = error instanceof Error ? error.message : String(error);
+				this.store.completeCardFarmingScan(
+					this.#record.id,
+					requestedNonce,
+					[],
+					message,
+				);
+				if (error instanceof SteamCommunityAuthenticationError) {
+					this.#cookies = null;
+					this.callbacks.refreshWebSession();
+				}
+			}
+		} finally {
+			this.#scanInFlight = false;
+			if (!this.#disposed) {
+				this.#scanIfRequested();
+			}
+		}
 	}
 
 	#schedule(delay: number): void {

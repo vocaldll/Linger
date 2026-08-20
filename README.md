@@ -10,7 +10,7 @@ Linger is a terminal-based Steam hour booster and card farmer with multi-account
 - Manage multiple Steam accounts through an interactive TUI
 - Sign in using a Steam Mobile QR code or credentials; passwords are never stored
 - Browse and search your library or add games manually by AppID
-- Boost multiple games, set total-hour targets, and automatically farm card drops
+- Boost multiple games, set total-hour targets, and review card-farming queues before starting
 - Configure visibility, custom game titles, away messages, and recent activity
 - Recover disconnected sessions and apply configuration changes automatically
 - Inspect live activity, timers, farming progress, and errors across the fleet
@@ -73,6 +73,12 @@ Back up the data directory or Docker volume as a unit. Deleting it removes Linge
 - Steam supports at most 32 simultaneous game entries. A custom title uses one slot, and recent-activity clearing reserves three. Games can still be configured using AppIDs if the library is unavailable.
 
 - Card farming temporarily replaces normal hour boosting. When the queue finishes, boosting resumes, or the account is disabled if no normal presence is configured.
+
+- The card-farming planner shows Steam's reported drops alongside cached playtime. Games can be excluded, reordered manually, or sorted by fewest drops or least playtime. Exclusions are remembered per account, and the queue can optionally be rescanned after each game.
+
+- Planner scans require the runner. A disabled account connects invisibly for the scan without starting a game, then disconnects unless the reviewed queue is started.
+
+- Linger does not assume a fixed playtime before a card drop. [Steam lets each developer configure its game's minimum](https://partner.steamgames.com/doc/marketing/tradingcards?l=english), so the planner does not derive an ETA from a universal threshold.
 
 - Auto-stop targets apply to normal hour boosting only. Card farming may carry a game beyond its target; Linger checks the current Steam playtime before normal boosting resumes.
 

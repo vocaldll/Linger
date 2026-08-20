@@ -5,6 +5,7 @@ import {
 	AWAY_MESSAGE_COOLDOWN_MS,
 	AwayMessageCooldown,
 	assessProfileStatus,
+	buildAccountPresenceIntent,
 	calculateAutoStopCheckDelay,
 	extendEarlyRetryProtection,
 	findReachedAutoStopTargets,
@@ -28,6 +29,9 @@ function account(overrides: Partial<Account> = {}): Account {
 		clearRecentActivity: true,
 		cardFarmingEnabled: false,
 		cardFarmingQueue: [],
+		cardFarmingExclusions: [],
+		cardFarmingPolicy: "manual",
+		cardFarmingRescan: false,
 		autoRestart: true,
 		enabled: true,
 		revision: 1,
@@ -42,6 +46,20 @@ function account(overrides: Partial<Account> = {}): Account {
 }
 
 describe("Steam account worker", () => {
+	it("keeps scan-only connections invisible and clears played games", () => {
+		assert.deepEqual(
+			buildAccountPresenceIntent(
+				account({
+					enabled: false,
+					visible: true,
+					cardFarmingEnabled: true,
+					cardFarmingQueue: [{ appId: 440, remainingDrops: 2 }],
+				}),
+			),
+			{ mode: "farm", appId: null, visible: false },
+		);
+	});
+
 	it("schedules the next auto-stop from current Steam minutes", () => {
 		const targets = [
 			{ appId: 730, targetMinutes: 7_777 * 60 },

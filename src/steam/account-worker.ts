@@ -198,6 +198,18 @@ export function presenceChanged(previous: Account, next: Account): boolean {
 	);
 }
 
+export function buildAccountPresenceIntent(account: Account): PresenceIntent {
+	return !account.enabled || account.cardFarmingEnabled
+		? {
+				mode: "farm",
+				appId: account.enabled
+					? (account.cardFarmingQueue[0]?.appId ?? null)
+					: null,
+				visible: account.enabled && account.visible,
+			}
+		: { mode: "boost", configuration: account };
+}
+
 function autoStopTargetsChanged(previous: Account, next: Account): boolean {
 	return (
 		JSON.stringify(previous.autoStopTargets) !==
@@ -275,6 +287,25 @@ export class AccountWorker {
 		this.#cardFarming?.reconcile(next);
 
 		if (!next.enabled) {
+			const cardScan = this.store.getCardFarmingScanState(next.id);
+			if (cardScan.requestedNonce > cardScan.completedNonce) {
+				this.#stopHourBoosting("disabled");
+				const connectionBlocked =
+					next.status === "needs_auth" ||
+					(!next.autoRestart && next.status === "error");
+				if (
+					!connectionBlocked &&
+					!this.#client &&
+					!this.#connecting &&
+					Date.now() >= this.#retryAt
+				) {
+					this.#connect();
+				}
+				if (!this.#runtimeSnapshotPublished) {
+					this.#publishCurrentActivity();
+				}
+				return;
+			}
 			this.#stopHourBoosting("disabled");
 			this.#disconnect();
 			this.#retryAt = 0;
@@ -623,7 +654,9 @@ export class AccountWorker {
 			!preflightAutoStops
 		) {
 			try {
-				const applied = await presence.apply(this.#presenceIntent(snapshot));
+				const applied = await presence.apply(
+					buildAccountPresenceIntent(snapshot),
+				);
 				if (applied) {
 					this.#autoStopTargetsSuppressed = false;
 				}
@@ -744,18 +777,6 @@ export class AccountWorker {
 				});
 			}
 		}
-	}
-
-	#presenceIntent(account: Account): PresenceIntent {
-		return !account.enabled || account.cardFarmingEnabled
-			? {
-					mode: "farm",
-					appId: account.enabled
-						? (account.cardFarmingQueue[0]?.appId ?? null)
-						: null,
-					visible: account.visible,
-				}
-			: { mode: "boost", configuration: account };
 	}
 
 	#normalBoostIntent(account: Account, appIds: number[]): PresenceIntent {
