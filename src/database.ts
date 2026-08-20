@@ -18,6 +18,11 @@ import {
 	validateCardFarmingQueue,
 } from "./domain/account.js";
 import type { OwnedGame } from "./domain/game-library.js";
+import type {
+	RuntimeSnapshot,
+	StoredRuntimeSnapshot,
+} from "./domain/runtime-snapshot.js";
+import { parseRuntimeSnapshot } from "./domain/runtime-snapshot.js";
 
 type AccountRow = {
 	id: string;
@@ -59,12 +64,30 @@ export type LibraryRefreshState = {
 	requestedNonce: number;
 	completedNonce: number;
 	lastError: string | null;
+	requestedAt: string | null;
+	lastAttemptAt: string | null;
+	lastSuccessAt: string | null;
 };
 
 type LibraryRefreshRow = {
 	requested_nonce: number;
 	completed_nonce: number;
 	last_error: string | null;
+	requested_at: string | null;
+	last_attempt_at: string | null;
+	last_success_at: string | null;
+};
+
+type RuntimeSnapshotRow = {
+	account_id: string;
+	runner_owner_id: string;
+	snapshot_json: string;
+	recorded_at: string;
+};
+
+export type RunnerLease = {
+	ownerId: string;
+	heartbeatAt: string;
 };
 
 const ACCOUNT_COLUMNS = `
@@ -538,23 +561,26 @@ export class AccountStore {
 		if (!this.get(accountId)) {
 			throw new Error(`Account not found: ${accountId}`);
 		}
+		const requestedAt = new Date().toISOString();
 		this.#db
 			.prepare(`
         INSERT INTO library_refresh_requests (
-          account_id, requested_nonce, completed_nonce, last_error
-        ) VALUES (?, 1, 0, NULL)
+          account_id, requested_nonce, completed_nonce, last_error, requested_at
+        ) VALUES (?, 1, 0, NULL, ?)
         ON CONFLICT(account_id) DO UPDATE SET
           requested_nonce = requested_nonce + 1,
-          last_error = NULL
+		  last_error = NULL,
+		  requested_at = excluded.requested_at
       `)
-			.run(accountId);
+			.run(accountId, requestedAt);
 		return this.getLibraryRefreshState(accountId).requestedNonce;
 	}
 
 	getLibraryRefreshState(accountId: string): LibraryRefreshState {
 		const row = this.#db
 			.prepare(`
-        SELECT requested_nonce, completed_nonce, last_error
+				SELECT requested_nonce, completed_nonce, last_error,
+				       requested_at, last_attempt_at, last_success_at
         FROM library_refresh_requests
         WHERE account_id = ?
       `)
@@ -564,8 +590,18 @@ export class AccountStore {
 					requestedNonce: row.requested_nonce,
 					completedNonce: row.completed_nonce,
 					lastError: row.last_error,
+					requestedAt: row.requested_at,
+					lastAttemptAt: row.last_attempt_at,
+					lastSuccessAt: row.last_success_at,
 				}
-			: { requestedNonce: 0, completedNonce: 0, lastError: null };
+			: {
+					requestedNonce: 0,
+					completedNonce: 0,
+					lastError: null,
+					requestedAt: null,
+					lastAttemptAt: null,
+					lastSuccessAt: null,
+				};
 	}
 
 	completeLibraryRefresh(
@@ -573,13 +609,85 @@ export class AccountStore {
 		requestedNonce: number,
 		lastError: string | null,
 	): void {
+		const attemptedAt = new Date().toISOString();
 		this.#db
 			.prepare(`
-        UPDATE library_refresh_requests
-        SET completed_nonce = ?, last_error = ?
-        WHERE account_id = ? AND completed_nonce < ?
-      `)
-			.run(requestedNonce, lastError, accountId, requestedNonce);
+				INSERT INTO library_refresh_requests (
+				  account_id, requested_nonce, completed_nonce, last_error,
+				  requested_at, last_attempt_at, last_success_at
+				)
+				SELECT ?, ?, ?, ?, NULL, ?, ?
+				WHERE EXISTS (SELECT 1 FROM accounts WHERE id = ?)
+				ON CONFLICT(account_id) DO UPDATE SET
+				  completed_nonce = excluded.completed_nonce,
+				  last_error = excluded.last_error,
+				  last_attempt_at = excluded.last_attempt_at,
+				  last_success_at = COALESCE(
+				    excluded.last_success_at,
+				    library_refresh_requests.last_success_at
+				  )
+				WHERE excluded.completed_nonce >= library_refresh_requests.completed_nonce
+			`)
+			.run(
+				accountId,
+				requestedNonce,
+				requestedNonce,
+				lastError,
+				attemptedAt,
+				lastError === null ? attemptedAt : null,
+				accountId,
+			);
+	}
+
+	writeRuntimeSnapshot(
+		accountId: string,
+		runnerOwnerId: string,
+		snapshot: RuntimeSnapshot,
+	): void {
+		if (!this.get(accountId)) {
+			throw new Error(`Account not found: ${accountId}`);
+		}
+		this.#db
+			.prepare(`
+				INSERT INTO runtime_snapshots (
+				  account_id, runner_owner_id, snapshot_json, recorded_at
+				) VALUES (?, ?, ?, ?)
+				ON CONFLICT(account_id) DO UPDATE SET
+				  runner_owner_id = excluded.runner_owner_id,
+				  snapshot_json = excluded.snapshot_json,
+				  recorded_at = excluded.recorded_at
+			`)
+			.run(
+				accountId,
+				runnerOwnerId,
+				JSON.stringify(snapshot),
+				new Date().toISOString(),
+			);
+	}
+
+	listRuntimeSnapshots(runnerOwnerId?: string): StoredRuntimeSnapshot[] {
+		const rows = (
+			runnerOwnerId === undefined
+				? this.#db
+						.prepare(`
+							SELECT account_id, runner_owner_id, snapshot_json, recorded_at
+							FROM runtime_snapshots
+						`)
+						.all()
+				: this.#db
+						.prepare(`
+							SELECT account_id, runner_owner_id, snapshot_json, recorded_at
+							FROM runtime_snapshots
+							WHERE runner_owner_id = ?
+						`)
+						.all(runnerOwnerId)
+		) as RuntimeSnapshotRow[];
+		return rows.map((row) => ({
+			accountId: row.account_id,
+			runnerOwnerId: row.runner_owner_id,
+			snapshot: parseRuntimeSnapshot(row.snapshot_json),
+			recordedAt: row.recorded_at,
+		}));
 	}
 
 	delete(id: string): void {
@@ -634,12 +742,23 @@ export class AccountStore {
 	}
 
 	hasActiveRunner(staleAfterMs = 30_000): boolean {
+		return this.getActiveRunnerLease(staleAfterMs) !== null;
+	}
+
+	getActiveRunnerLease(staleAfterMs = 30_000): RunnerLease | null {
 		const row = this.#db
 			.prepare(
-				"SELECT heartbeat_at FROM runner_lease WHERE singleton = 1 AND heartbeat_at >= ?",
+				"SELECT owner_id, heartbeat_at FROM runner_lease WHERE singleton = 1 AND heartbeat_at >= ?",
 			)
-			.get(Date.now() - staleAfterMs);
-		return row !== undefined;
+			.get(Date.now() - staleAfterMs) as
+			| { owner_id: string; heartbeat_at: number }
+			| undefined;
+		return row
+			? {
+					ownerId: row.owner_id,
+					heartbeatAt: new Date(row.heartbeat_at).toISOString(),
+				}
+			: null;
 	}
 
 	#require(id: string): Account {
@@ -661,7 +780,7 @@ export class AccountStore {
 			user_version: number;
 		};
 		const version = versionRow.user_version;
-		if (version > 10) {
+		if (version > 11) {
 			throw new Error(
 				`Database schema ${version} is newer than this version of Linger supports`,
 			);
@@ -784,6 +903,28 @@ export class AccountStore {
           CHECK (auto_restart IN (0, 1));
         PRAGMA user_version = 10;
       `);
+		}
+
+		if (version <= 10) {
+			this.#db.exec("BEGIN IMMEDIATE");
+			try {
+				this.#db.exec(`
+				ALTER TABLE library_refresh_requests ADD COLUMN requested_at TEXT;
+				ALTER TABLE library_refresh_requests ADD COLUMN last_attempt_at TEXT;
+				ALTER TABLE library_refresh_requests ADD COLUMN last_success_at TEXT;
+				CREATE TABLE runtime_snapshots (
+				  account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+				  runner_owner_id TEXT NOT NULL,
+				  snapshot_json TEXT NOT NULL,
+				  recorded_at TEXT NOT NULL
+				);
+				PRAGMA user_version = 11;
+			`);
+				this.#db.exec("COMMIT");
+			} catch (error) {
+				this.#db.exec("ROLLBACK");
+				throw error;
+			}
 		}
 	}
 }

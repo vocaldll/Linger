@@ -198,25 +198,74 @@ describe("AccountStore", () => {
 			requestedNonce: 0,
 			completedNonce: 0,
 			lastError: null,
+			requestedAt: null,
+			lastAttemptAt: null,
+			lastSuccessAt: null,
 		});
 		const first = store.requestLibraryRefresh(account.id);
 		assert.equal(first, 1);
 		store.completeLibraryRefresh(account.id, first, "Steam unavailable");
-		assert.deepEqual(store.getLibraryRefreshState(account.id), {
-			requestedNonce: 1,
-			completedNonce: 1,
-			lastError: "Steam unavailable",
-		});
+		const failed = store.getLibraryRefreshState(account.id);
+		assert.equal(failed.requestedNonce, 1);
+		assert.equal(failed.completedNonce, 1);
+		assert.equal(failed.lastError, "Steam unavailable");
+		assert.ok(failed.requestedAt);
+		assert.ok(failed.lastAttemptAt);
+		assert.equal(failed.lastSuccessAt, null);
 
 		const second = store.requestLibraryRefresh(account.id);
 		assert.equal(second, 2);
 		assert.equal(store.getLibraryRefreshState(account.id).lastError, null);
 		store.completeLibraryRefresh(account.id, second, null);
-		assert.deepEqual(store.getLibraryRefreshState(account.id), {
-			requestedNonce: 2,
-			completedNonce: 2,
-			lastError: null,
+		const completed = store.getLibraryRefreshState(account.id);
+		assert.equal(completed.requestedNonce, 2);
+		assert.equal(completed.completedNonce, 2);
+		assert.equal(completed.lastError, null);
+		assert.ok(completed.lastSuccessAt);
+		store.delete(account.id);
+		assert.doesNotThrow(() =>
+			store.completeLibraryRefresh(account.id, second, null),
+		);
+		store.close();
+	});
+
+	it("persists runtime snapshots with their runner owner", () => {
+		const store = createStore();
+		const account = store.create({
+			accountName: "snapshot-test",
+			steamId: null,
+			refreshTokenEncrypted: "encrypted",
+			machineAuthTokenEncrypted: null,
+			appIds: [730],
+			autoStopTargets: [],
+			customGame: null,
+			visible: true,
+			clearRecentActivity: false,
+			cardFarmingEnabled: false,
+			autoRestart: true,
+			enabled: true,
 		});
+		const activitySince = "2026-08-20T10:00:00.000Z";
+		store.writeRuntimeSnapshot(account.id, "runner-one", {
+			version: 1,
+			activity: {
+				kind: "boosting",
+				appIds: [730],
+				customGame: null,
+				autoStop: [],
+			},
+			activitySince,
+			sessionStartedAt: activitySince,
+			externalAppId: null,
+		});
+
+		const [stored] = store.listRuntimeSnapshots();
+		assert.equal(stored?.accountId, account.id);
+		assert.equal(stored?.runnerOwnerId, "runner-one");
+		assert.equal(stored?.snapshot.activity.kind, "boosting");
+		assert.ok(stored?.recordedAt);
+		assert.equal(store.listRuntimeSnapshots("runner-one").length, 1);
+		assert.deepEqual(store.listRuntimeSnapshots("runner-two"), []);
 		store.close();
 	});
 
@@ -278,6 +327,23 @@ describe("AccountStore", () => {
 		assert.equal(store.get("id")?.autoRestart, true);
 		assert.deepEqual([...store.listTrackedPlaytimes("id")], []);
 		store.close();
+		const migrated = new DatabaseSync(databasePath, { readOnly: true });
+		assert.equal(
+			(
+				migrated.prepare("PRAGMA user_version").get() as {
+					user_version: number;
+				}
+			).user_version,
+			11,
+		);
+		assert.deepEqual(
+			migrated
+				.prepare("PRAGMA table_info(runtime_snapshots)")
+				.all()
+				.map((column) => (column as { name: string }).name),
+			["account_id", "runner_owner_id", "snapshot_json", "recorded_at"],
+		);
+		migrated.close();
 	});
 
 	it("persists and completes per-game auto-stop targets", () => {

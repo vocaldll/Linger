@@ -3,6 +3,10 @@ import SteamUser from "steam-user";
 import type { CredentialVault } from "../crypto.js";
 import type { AccountStore } from "../database.js";
 import type { Account, AutoStopTarget } from "../domain/account.js";
+import type {
+	AutoStopRuntimeProgress,
+	RuntimeActivity,
+} from "../domain/runtime-snapshot.js";
 import { logger } from "../logger.js";
 import { CardFarmingController } from "./card-farming.js";
 import {
@@ -224,6 +228,13 @@ export class AccountWorker {
 	#autoStopMonitoringRevision = 0;
 	#autoStopTimer: NodeJS.Timeout | null = null;
 	#autoStopTargetsSuppressed = false;
+	#autoStopProgress: AutoStopRuntimeProgress[] = [];
+	#sessionStartedAt: string | null = null;
+	#externalAppId: number | null = null;
+	#activitySince = new Date().toISOString();
+	#lastActivityIdentity: string | null = null;
+	#runtimeSnapshotPublished = false;
+	#runtimePublishErrorLogged = false;
 	readonly #awayMessageCooldown = new AwayMessageCooldown();
 
 	constructor(
@@ -231,6 +242,7 @@ export class AccountWorker {
 		private readonly vault: CredentialVault,
 		account: Account,
 		private readonly machineIdentity: SteamMachineIdentity,
+		private readonly runnerOwnerId: string,
 		private readonly communityProfileStatus: CommunityProfileStatus = new SteamCommunityCardService(),
 	) {
 		this.#record = account;
@@ -275,6 +287,7 @@ export class AccountWorker {
 					lastError: null,
 				});
 			}
+			this.#publishCurrentActivity();
 			return;
 		}
 
@@ -295,6 +308,7 @@ export class AccountWorker {
 			this.#earlyRetryProtectionUntil = 0;
 			this.#webCookies = null;
 			this.#record = this.store.updateRuntime(next.id, { status: "error" });
+			this.#publishCurrentActivity();
 		} else if (autoRestartEnabled && !this.#client && !this.#connecting) {
 			this.#retryAt = 0;
 			this.#retryAttempt = 0;
@@ -333,6 +347,9 @@ export class AccountWorker {
 				this.#connect();
 			}
 		}
+		if (!this.#runtimeSnapshotPublished) {
+			this.#publishCurrentActivity();
+		}
 	}
 
 	stop(): void {
@@ -365,6 +382,7 @@ export class AccountWorker {
 				status: "needs_auth",
 				lastError: error instanceof Error ? error.message : String(error),
 			});
+			this.#publishCurrentActivity();
 			return;
 		}
 
@@ -382,6 +400,7 @@ export class AccountWorker {
 			status: "connecting",
 			lastError: null,
 		});
+		this.#publishCurrentActivity();
 		logger.info("steam", "Connecting", { account: account.accountName });
 
 		client.on("loggedOn", () => {
@@ -396,6 +415,7 @@ export class AccountWorker {
 				this.#earlyRetryProtectionUntil,
 				Date.now(),
 			);
+			this.#sessionStartedAt = new Date().toISOString();
 			this.#presence?.dispose();
 			this.#presence = new PresenceController(client, 3_000, (error) => {
 				logger.warn(
@@ -433,6 +453,11 @@ export class AccountWorker {
 						});
 					}
 				},
+				stateChanged: () => {
+					if (this.#isCurrent(generation, client)) {
+						this.#publishCurrentActivity();
+					}
+				},
 			});
 			this.#applyPresence();
 			void this.#syncLibrary(generation, client, account.id);
@@ -445,6 +470,7 @@ export class AccountWorker {
 					lastConnectedAt: new Date().toISOString(),
 				});
 			}
+			this.#publishCurrentActivity();
 			logger.info("steam", "Connected", {
 				account: account.accountName,
 				steamId: client.steamID?.getSteamID64() ?? null,
@@ -485,6 +511,13 @@ export class AccountWorker {
 			if (this.#isCurrent(generation, client)) {
 				this.#cardFarming?.notifyNewItems();
 			}
+		});
+		client.on("playingState", (blocked, playingApp) => {
+			if (!this.#isCurrent(generation, client)) {
+				return;
+			}
+			this.#externalAppId = blocked && playingApp > 0 ? playingApp : null;
+			this.#publishCurrentActivity();
 		});
 		client.chat.on("friendMessage", (message) => {
 			if (!this.#isCurrent(generation, client)) {
@@ -745,6 +778,7 @@ export class AccountWorker {
 		}
 		if (!snapshot.enabled) {
 			this.#appliedPresenceMode = null;
+			this.#publishCurrentActivity();
 			return;
 		}
 		const mode: AppliedPresenceMode = snapshot.cardFarmingEnabled
@@ -780,6 +814,7 @@ export class AccountWorker {
 		const action = this.#appliedPresenceMode === mode ? "updated" : "started";
 		logger.info("presence", `${label} ${action}`, fields);
 		this.#appliedPresenceMode = mode;
+		this.#publishCurrentActivity();
 	}
 
 	#refreshAutoStopMonitoring(): void {
@@ -796,6 +831,7 @@ export class AccountWorker {
 		) {
 			return;
 		}
+		this.#publishCurrentActivity();
 		const monitoringRevision = this.#autoStopMonitoringRevision;
 		void this.#refreshAutoStopMonitoringOperation(
 			monitoringRevision,
@@ -944,6 +980,22 @@ export class AccountWorker {
 				this.#applyPresence(false);
 			}
 		}, delayMs);
+		const elapsedMs = performance.now() - boostingStartedAt;
+		const observedAt = Date.now() - elapsedMs;
+		this.#autoStopProgress = targets.map((target) => {
+			const observedMinutes = playtimes.get(target.appId) ?? 0;
+			return {
+				appId: target.appId,
+				observedMinutes,
+				targetMinutes: target.targetMinutes,
+				observedAt: new Date(observedAt).toISOString(),
+				estimatedCompletionAt: new Date(
+					observedAt +
+						Math.max(0, target.targetMinutes - observedMinutes) * 60_000,
+				).toISOString(),
+			};
+		});
+		this.#publishCurrentActivity();
 	}
 
 	#scheduleAutoStopRetry(
@@ -965,6 +1017,7 @@ export class AccountWorker {
 
 	#resetAutoStopMonitoring(): void {
 		this.#autoStopMonitoringRevision += 1;
+		this.#autoStopProgress = [];
 		this.#cancelAutoStopTimer();
 	}
 
@@ -1071,6 +1124,7 @@ export class AccountWorker {
 				status: "needs_auth",
 				lastError: error.message,
 			});
+			this.#publishCurrentActivity();
 			logger.error("steam", "Reauthentication required", {
 				account: account.accountName,
 				error: error.message,
@@ -1087,6 +1141,7 @@ export class AccountWorker {
 				status: "error",
 				lastError: error.message,
 			});
+			this.#publishCurrentActivity();
 			logger.warn("steam", "Disconnected; automatic restart disabled", {
 				account: account.accountName,
 				error: error.message,
@@ -1107,6 +1162,7 @@ export class AccountWorker {
 				status: "backoff",
 				lastError: error.message,
 			});
+			this.#publishCurrentActivity();
 			logger.warn("steam", "Disconnected; waiting for game exit", {
 				account: account.accountName,
 				error: error.message,
@@ -1126,6 +1182,7 @@ export class AccountWorker {
 			status: "backoff",
 			lastError: error.message,
 		});
+		this.#publishCurrentActivity();
 		logger.warn("steam", "Disconnected; retry scheduled", {
 			account: account.accountName,
 			error: error.message,
@@ -1147,6 +1204,7 @@ export class AccountWorker {
 
 		wait.checkInFlight = true;
 		wait.nextCheckAt = Date.now() + PROFILE_STATUS_POLL_INTERVAL_MS;
+		this.#publishCurrentActivity();
 		try {
 			const status =
 				await this.communityProfileStatus.getProfileStatus(cookies);
@@ -1161,6 +1219,7 @@ export class AccountWorker {
 			if (assessment.action === "wait") {
 				wait.lastStatus = assessment.lastStatus;
 				wait.consecutiveMatches = assessment.consecutiveMatches;
+				this.#publishCurrentActivity();
 				return;
 			}
 			if (assessment.action === "fallback") {
@@ -1198,6 +1257,7 @@ export class AccountWorker {
 		this.#gameExitWait = null;
 		this.#earlyRetryProtectionUntil = 0;
 		this.#retryAt = Date.now() + LOGGED_IN_ELSEWHERE_RETRY_MS;
+		this.#publishCurrentActivity();
 		logger.warn("steam", "Profile status unavailable; using fixed retry", {
 			account: this.#record.accountName,
 			reason,
@@ -1217,9 +1277,11 @@ export class AccountWorker {
 		this.#cardFarming = null;
 		this.#appliedPresenceMode = null;
 		this.#autoStopTargetsSuppressed = false;
+		this.#sessionStartedAt = null;
 		this.#connecting = false;
 		if (!preserveWebSession) {
 			this.#webCookies = null;
+			this.#externalAppId = null;
 		}
 		if (client) {
 			client.removeAllListeners();
@@ -1236,6 +1298,113 @@ export class AccountWorker {
 			next,
 		});
 		this.#appliedPresenceMode = null;
+	}
+
+	#publishCurrentActivity(): void {
+		const activity = this.#currentActivity();
+		const identity = this.#activityIdentity(activity);
+		if (identity !== this.#lastActivityIdentity) {
+			this.#lastActivityIdentity = identity;
+			this.#activitySince = new Date().toISOString();
+		}
+		try {
+			this.store.writeRuntimeSnapshot(this.#record.id, this.runnerOwnerId, {
+				version: 1,
+				activity,
+				activitySince: this.#activitySince,
+				sessionStartedAt: this.#sessionStartedAt,
+				externalAppId: this.#externalAppId,
+			});
+			this.#runtimeSnapshotPublished = true;
+			this.#runtimePublishErrorLogged = false;
+		} catch (error) {
+			this.#runtimeSnapshotPublished = false;
+			if (!this.#runtimePublishErrorLogged) {
+				this.#runtimePublishErrorLogged = true;
+				logger.warn("runner", "Could not publish account runtime status", {
+					account: this.#record.accountName,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+	}
+
+	#activityIdentity(activity: RuntimeActivity): string {
+		switch (activity.kind) {
+			case "connecting":
+				return `${activity.kind}:${activity.attempt}`;
+			case "boosting":
+				return `${activity.kind}:${activity.appIds.join(",")}:${activity.customGame ?? ""}`;
+			case "farming":
+				return `${activity.kind}:${activity.appId ?? "scan"}`;
+			case "waiting_external_game":
+				return `${activity.kind}:${activity.externalAppId ?? "unknown"}`;
+			case "retrying":
+				return `${activity.kind}:${activity.attempt}:${activity.retryAt}`;
+			default:
+				return activity.kind;
+		}
+	}
+
+	#currentActivity(): RuntimeActivity {
+		if (!this.#record.enabled) {
+			return { kind: "disabled" };
+		}
+		if (this.#record.status === "needs_auth") {
+			return { kind: "needs_auth" };
+		}
+		if (this.#record.status === "error") {
+			return { kind: "error" };
+		}
+		if (this.#connecting) {
+			return { kind: "connecting", attempt: this.#retryAttempt + 1 };
+		}
+		if (this.#gameExitWait) {
+			return {
+				kind: "waiting_external_game",
+				externalAppId: this.#externalAppId,
+				nextCheckAt: this.#timestamp(this.#gameExitWait.nextCheckAt),
+			};
+		}
+		if (!this.#client && Number.isFinite(this.#retryAt) && this.#retryAt > 0) {
+			return {
+				kind: "retrying",
+				attempt: Math.max(1, this.#retryAttempt),
+				retryAt: new Date(this.#retryAt).toISOString(),
+			};
+		}
+		if (this.#externalAppId !== null) {
+			return {
+				kind: "waiting_external_game",
+				externalAppId: this.#externalAppId,
+				nextCheckAt: null,
+			};
+		}
+		if (this.#record.cardFarmingEnabled && this.#client) {
+			const active = this.#record.cardFarmingQueue[0];
+			return {
+				kind: "farming",
+				appId: active?.appId ?? null,
+				remainingDrops: active?.remainingDrops ?? null,
+				queueLength: this.#record.cardFarmingQueue.length,
+				nextCheckAt: this.#timestamp(this.#cardFarming?.nextCheckAt ?? null),
+			};
+		}
+		if (this.#appliedPresenceMode === "hour-boosting") {
+			return {
+				kind: "boosting",
+				appIds: [...this.#record.appIds],
+				customGame: this.#record.customGame,
+				autoStop: this.#autoStopProgress,
+			};
+		}
+		return { kind: "idle" };
+	}
+
+	#timestamp(value: number | null): string | null {
+		return value !== null && Number.isFinite(value) && value > 0
+			? new Date(value).toISOString()
+			: null;
 	}
 
 	#isCurrent(generation: number, client: SteamUser): boolean {

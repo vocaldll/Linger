@@ -101,6 +101,7 @@ export class Runner {
 					this.vault,
 					account,
 					this.machineIdentity,
+					this.#ownerId,
 				);
 				this.#workers.set(account.id, worker);
 			}

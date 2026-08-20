@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 
-import { loadConfig } from "./config.js";
+import { existsSync } from "node:fs";
+import { loadConfig, resolveDataPaths } from "./config.js";
 import { CredentialVault } from "./crypto.js";
 import { AccountStore } from "./database.js";
 import { Runner } from "./runner.js";
+import { printStatus, watchStatus } from "./status.js";
 import { runManagementTui } from "./tui.js";
 
-const command = process.argv[2];
+const [command, ...commandArguments] = process.argv.slice(2);
 
 function printHelp(): void {
 	process.stdout.write(
@@ -16,10 +18,66 @@ function printHelp(): void {
 			"Usage:",
 			"  linger run       Run all enabled accounts",
 			"  linger manage    Open the account management TUI",
+			"  linger status    Show fleet status",
 			"  linger --help    Show this help",
+			"",
+			"Status options:",
+			"  --watch          Refresh the dashboard continuously",
+			"  --json           Print one machine-readable snapshot",
 			"",
 		].join("\n"),
 	);
+}
+
+function printStatusHelp(): void {
+	process.stdout.write(
+		[
+			"Usage: linger status [--watch | --json]",
+			"",
+			"  --watch    Refresh the dashboard continuously",
+			"  --json     Print one machine-readable snapshot",
+			"  --help     Show status help",
+			"",
+		].join("\n"),
+	);
+}
+
+async function showStatus(): Promise<void> {
+	if (
+		commandArguments.length === 1 &&
+		(commandArguments[0] === "--help" || commandArguments[0] === "-h")
+	) {
+		printStatusHelp();
+		return;
+	}
+	let watch = false;
+	let json = false;
+	for (const argument of commandArguments) {
+		if (argument === "--watch") {
+			watch = true;
+		} else if (argument === "--json") {
+			json = true;
+		} else {
+			throw new Error(`Unknown status option: ${argument}`);
+		}
+	}
+	if (watch && json) {
+		throw new Error("--watch and --json cannot be used together");
+	}
+	const { databasePath } = resolveDataPaths();
+	if (!existsSync(databasePath)) {
+		throw new Error(`No Linger database found at ${databasePath}`);
+	}
+	const store = new AccountStore(databasePath);
+	try {
+		if (watch) {
+			await watchStatus(store);
+		} else {
+			printStatus(store, json);
+		}
+	} finally {
+		store.close();
+	}
 }
 
 async function runService(): Promise<void> {
@@ -70,6 +128,9 @@ async function main(): Promise<void> {
 			break;
 		case "manage":
 			await manageAccounts();
+			break;
+		case "status":
+			await showStatus();
 			break;
 		case "--help":
 		case "-h":

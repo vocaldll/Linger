@@ -20,6 +20,7 @@ type CardFarmingCallbacks = {
 	accountChanged(account: Account): void;
 	applyPresence(account: Account): void;
 	refreshWebSession(): void;
+	stateChanged(): void;
 };
 
 export class CardFarmingController {
@@ -30,6 +31,7 @@ export class CardFarmingController {
 	#checkRequested = false;
 	#disposed = false;
 	#activityAnnounced = false;
+	#nextCheckAt: number | null = null;
 
 	constructor(
 		private readonly store: CardFarmingStore,
@@ -40,6 +42,10 @@ export class CardFarmingController {
 		this.#record = account;
 	}
 
+	get nextCheckAt(): number | null {
+		return this.#nextCheckAt;
+	}
+
 	reconcile(account: Account): void {
 		const wasActive = this.#record.enabled && this.#record.cardFarmingEnabled;
 		const previousAppId = this.#record.cardFarmingQueue[0]?.appId;
@@ -47,7 +53,10 @@ export class CardFarmingController {
 			wasActive && (!account.enabled || !account.cardFarmingEnabled);
 		this.#record = account;
 		if (!account.enabled || !account.cardFarmingEnabled) {
-			this.#cancelTimer();
+			const scheduleChanged = this.#cancelTimer();
+			if (scheduleChanged) {
+				this.callbacks.stateChanged();
+			}
 			this.#activityAnnounced = false;
 			if (stopped) {
 				logger.info("cards", "Farming stopped", {
@@ -101,6 +110,7 @@ export class CardFarmingController {
 		}
 
 		this.#cancelTimer();
+		this.callbacks.stateChanged();
 		this.#inFlight = true;
 		try {
 			await this.#check();
@@ -134,7 +144,9 @@ export class CardFarmingController {
 	dispose(): void {
 		this.#disposed = true;
 		this.#cookies = null;
-		this.#cancelTimer();
+		if (this.#cancelTimer()) {
+			this.callbacks.stateChanged();
+		}
 	}
 
 	async #check(): Promise<void> {
@@ -287,17 +299,23 @@ export class CardFarmingController {
 			return;
 		}
 		this.#cancelTimer();
+		this.#nextCheckAt = Date.now() + delay;
 		this.#timer = setTimeout(() => {
 			this.#timer = null;
+			this.#nextCheckAt = null;
 			void this.checkNow();
 		}, delay);
 		this.#timer.unref();
+		this.callbacks.stateChanged();
 	}
 
-	#cancelTimer(): void {
+	#cancelTimer(): boolean {
+		const changed = this.#timer !== null || this.#nextCheckAt !== null;
 		if (this.#timer) {
 			clearTimeout(this.#timer);
 			this.#timer = null;
 		}
+		this.#nextCheckAt = null;
+		return changed;
 	}
 }

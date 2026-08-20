@@ -20,6 +20,11 @@ export type AppConfig = {
 	steamMachineIdentity: SteamMachineIdentity;
 };
 
+export type DataPaths = {
+	dataDir: string;
+	databasePath: string;
+};
+
 const DEFAULT_RECONCILE_INTERVAL_MS = 2_000;
 const MINIMUM_MASTER_KEY_LENGTH = 32;
 
@@ -102,17 +107,25 @@ function loadOrCreateMasterKey(dataDir: string): string {
 	}
 }
 
-export function loadConfig(): AppConfig {
+export function resolveDataPaths(): DataPaths {
 	const dataDir = path.resolve(
 		process.env.LINGER_DATA_DIR ?? path.join(process.cwd(), "data"),
 	);
-	mkdirSync(dataDir, { recursive: true });
-
 	return {
 		dataDir,
 		databasePath: path.resolve(
 			process.env.LINGER_DB_PATH ?? path.join(dataDir, "linger.sqlite"),
 		),
+	};
+}
+
+export function loadConfig(): AppConfig {
+	const { dataDir, databasePath } = resolveDataPaths();
+	mkdirSync(dataDir, { recursive: true });
+
+	return {
+		dataDir,
+		databasePath,
 		masterKey: loadOrCreateMasterKey(dataDir),
 		reconcileIntervalMs: readPositiveInteger(
 			process.env.LINGER_RECONCILE_INTERVAL_MS,

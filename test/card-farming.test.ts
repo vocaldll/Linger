@@ -79,6 +79,7 @@ function createController(
 				applied.push(updated);
 			},
 			refreshWebSession() {},
+			stateChanged() {},
 		},
 		community,
 	);
@@ -88,6 +89,34 @@ function createController(
 }
 
 describe("card farming controller", () => {
+	it("publishes one state change for each timer change", () => {
+		const store = createStore();
+		const account = createAccount(store, [730]);
+		let stateChanges = 0;
+		const controller = new CardFarmingController(
+			store,
+			account,
+			{
+				accountChanged() {},
+				applyPresence() {},
+				refreshWebSession() {},
+				stateChanged() {
+					stateChanges += 1;
+				},
+			},
+			new FakeCommunity([]),
+		);
+		controllers.push(controller);
+
+		controller.setWebSession(["session=secret"]);
+		assert.equal(stateChanges, 1);
+		controller.notifyNewItems();
+		assert.equal(stateChanges, 2);
+		controller.dispose();
+		assert.equal(stateChanges, 3);
+		store.close();
+	});
+
 	it("farms a persisted queue and restores hour boosting when it is exhausted", async () => {
 		const store = createStore();
 		const account = createAccount(store, [730]);
