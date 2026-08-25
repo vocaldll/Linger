@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, it } from "node:test";
+import SteamUser from "steam-user";
+import { CredentialVault } from "../src/crypto.js";
+import { AccountStore } from "../src/database.js";
 import type { Account } from "../src/domain/account.js";
 import {
+	AccountWorker,
 	AWAY_MESSAGE_COOLDOWN_MS,
 	AwayMessageCooldown,
 	assessProfileStatus,
@@ -13,6 +20,7 @@ import {
 	presenceChanged,
 	selectCurrentAutoStopTargets,
 } from "../src/steam/account-worker.js";
+import { createSteamMachineIdentity } from "../src/steam/machine-identity.js";
 
 function account(overrides: Partial<Account> = {}): Account {
 	return {
@@ -46,6 +54,51 @@ function account(overrides: Partial<Account> = {}): Account {
 }
 
 describe("Steam account worker", () => {
+	it("backs off when a connection attempt never completes", (context) => {
+		context.mock.timers.enable({ apis: ["setTimeout"] });
+		context.mock.method(SteamUser.prototype, "logOn", () => {});
+		context.mock.method(SteamUser.prototype, "logOff", () => {});
+		const directory = mkdtempSync(path.join(tmpdir(), "linger-worker-test-"));
+		const store = new AccountStore(path.join(directory, "linger.sqlite"));
+		const vault = new CredentialVault("account worker test master key");
+		try {
+			const persisted = store.create({
+				accountName: "account",
+				steamId: "76561198000000000",
+				refreshTokenEncrypted: vault.encrypt("refresh-token"),
+				machineAuthTokenEncrypted: null,
+				appIds: [730],
+				autoStopTargets: [],
+				customGame: null,
+				visible: false,
+				clearRecentActivity: false,
+				cardFarmingEnabled: false,
+				autoRestart: true,
+				enabled: true,
+			});
+			const worker = new AccountWorker(
+				store,
+				vault,
+				persisted,
+				createSteamMachineIdentity("worker-test-device"),
+				"runner",
+			);
+
+			worker.reconcile(persisted);
+			assert.equal(store.get(persisted.id)?.status, "connecting");
+
+			context.mock.timers.tick(2 * 60 * 1_000);
+
+			const failed = store.get(persisted.id);
+			assert.equal(failed?.status, "backoff");
+			assert.equal(failed?.lastError, "Steam connection attempt timed out");
+			worker.stop();
+		} finally {
+			store.close();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("keeps scan-only connections invisible and clears played games", () => {
 		assert.deepEqual(
 			buildAccountPresenceIntent(

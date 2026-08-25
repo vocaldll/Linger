@@ -21,6 +21,7 @@ import { PresenceController, type PresenceIntent } from "./presence.js";
 
 const INITIAL_RETRY_MS = 5_000;
 const MAX_RETRY_MS = 5 * 60 * 1_000;
+const CONNECTION_ATTEMPT_TIMEOUT_MS = 2 * 60 * 1_000;
 const LOGGED_IN_ELSEWHERE_RETRY_MS = 45 * 60 * 1_000;
 const PROFILE_STATUS_POLL_INTERVAL_MS = 30_000;
 const PROFILE_STATUS_CONFIRMATIONS_REQUIRED = 2;
@@ -231,6 +232,7 @@ export class AccountWorker {
 	#generation = 0;
 	#retryAttempt = 0;
 	#retryAt = 0;
+	#connectionAttemptTimeout: NodeJS.Timeout | null = null;
 	#appliedPresenceMode: AppliedPresenceMode | null = null;
 	#webCookies: readonly string[] | null = null;
 	#gameExitWait: GameExitWait | null = null;
@@ -438,6 +440,7 @@ export class AccountWorker {
 			if (!this.#isCurrent(generation, client)) {
 				return;
 			}
+			this.#clearConnectionAttemptTimeout();
 			this.#connecting = false;
 			this.#retryAttempt = 0;
 			this.#retryAt = 0;
@@ -607,6 +610,12 @@ export class AccountWorker {
 			}
 		});
 
+		this.#connectionAttemptTimeout = setTimeout(() => {
+			this.#connectionAttemptTimeout = null;
+			if (this.#isCurrent(generation, client) && this.#connecting) {
+				this.#fail(new Error("Steam connection attempt timed out"), false);
+			}
+		}, CONNECTION_ATTEMPT_TIMEOUT_MS);
 		try {
 			client.logOn({
 				refreshToken,
@@ -1288,6 +1297,7 @@ export class AccountWorker {
 
 	#disconnect(preserveWebSession = false): void {
 		const client = this.#client;
+		this.#clearConnectionAttemptTimeout();
 		this.#generation += 1;
 		this.#presenceOperation += 1;
 		this.#resetAutoStopMonitoring();
@@ -1307,6 +1317,13 @@ export class AccountWorker {
 		if (client) {
 			client.removeAllListeners();
 			client.logOff();
+		}
+	}
+
+	#clearConnectionAttemptTimeout(): void {
+		if (this.#connectionAttemptTimeout) {
+			clearTimeout(this.#connectionAttemptTimeout);
+			this.#connectionAttemptTimeout = null;
 		}
 	}
 
