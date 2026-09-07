@@ -5,6 +5,8 @@ import { logger } from "./logger.js";
 import { AccountWorker } from "./steam/account-worker.js";
 import type { SteamMachineIdentity } from "./steam/machine-identity.js";
 
+const HEARTBEAT_INTERVAL_MS = 10_000;
+
 export class Runner {
 	readonly #workers = new Map<string, AccountWorker>();
 	readonly #ownerId = randomUUID();
@@ -45,12 +47,22 @@ export class Runner {
 
 	async #run(): Promise<void> {
 		logger.info("runner", "Started");
+		let nextReconcileAt = 0;
 		try {
 			while (this.#running) {
 				this.store.heartbeatRunner(this.#ownerId);
-				this.#reconcile();
+				if (Date.now() >= nextReconcileAt) {
+					this.#reconcile();
+					nextReconcileAt = Date.now() + this.reconcileIntervalMs;
+				}
 				await new Promise<void>((resolve) => {
-					const timer = setTimeout(resolve, this.reconcileIntervalMs);
+					const timer = setTimeout(
+						resolve,
+						Math.min(
+							HEARTBEAT_INTERVAL_MS,
+							Math.max(1, nextReconcileAt - Date.now()),
+						),
+					);
 					this.#wake = () => {
 						clearTimeout(timer);
 						resolve();
