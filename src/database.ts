@@ -48,6 +48,7 @@ type AccountRow = {
 	revision: number;
 	restart_nonce: number;
 	status: AccountStatus;
+	paused_until: string | null;
 	last_error: string | null;
 	last_connected_at: string | null;
 	created_at: string;
@@ -119,7 +120,7 @@ const ACCOUNT_COLUMNS = `
   id, account_name, steam_id, refresh_token_encrypted, machine_auth_token_encrypted,
   app_ids_json, auto_stop_targets_json, custom_game, away_message, visible, clear_recent_activity, card_farming_enabled,
   card_farming_queue_json, card_farming_exclusions_json, card_farming_policy, card_farming_rescan,
-  auto_restart, enabled, revision, restart_nonce, status,
+  auto_restart, enabled, paused_until, revision, restart_nonce, status,
   last_error, last_connected_at, created_at, updated_at
 `;
 
@@ -193,6 +194,7 @@ function mapAccount(row: AccountRow): Account {
 		cardFarmingRescan: row.card_farming_rescan === 1,
 		autoRestart: row.auto_restart === 1,
 		enabled: row.enabled === 1,
+		pausedUntil: row.paused_until,
 		revision: row.revision,
 		restartNonce: row.restart_nonce,
 		status: row.status,
@@ -385,17 +387,52 @@ export class AccountStore {
 		const result = this.#db
 			.prepare(`
         UPDATE accounts
-        SET enabled = ?, status = ?, last_error = NULL, revision = revision + 1, updated_at = ?
+        SET enabled = ?, status = ?, paused_until = NULL, restart_nonce = restart_nonce + ?,
+            last_error = NULL, revision = revision + 1, updated_at = ?
         WHERE id = ?
       `)
 			.run(
 				enabled ? 1 : 0,
 				enabled ? "idle" : "disabled",
+				enabled && account.pausedUntil !== null ? 1 : 0,
 				new Date().toISOString(),
 				id,
 			);
 		this.#assertChanged(result.changes, id);
 		return this.#require(id);
+	}
+
+	pauseUntil(id: string, until: string): Account {
+		const account = this.#require(id);
+		if (!account.enabled && account.pausedUntil === null) {
+			throw new Error("Enable this account before pausing it");
+		}
+		const timestamp = Date.parse(until);
+		if (!Number.isFinite(timestamp) || timestamp <= Date.now()) {
+			throw new Error("Choose a future date and time");
+		}
+		validateAccountSetup(account);
+		this.#db
+			.prepare(`
+			UPDATE accounts
+			SET enabled = 0, paused_until = ?, status = 'disabled', last_error = NULL,
+			    revision = revision + 1, updated_at = ?
+			WHERE id = ?
+		`)
+			.run(new Date(timestamp).toISOString(), new Date().toISOString(), id);
+		return this.#require(id);
+	}
+
+	resumeDueAccounts(): void {
+		const now = new Date().toISOString();
+		this.#db
+			.prepare(`
+			UPDATE accounts
+			SET enabled = 1, paused_until = NULL, status = 'idle', last_error = NULL,
+			    restart_nonce = restart_nonce + 1, revision = revision + 1, updated_at = ?
+			WHERE paused_until <= ? AND enabled = 0
+		`)
+			.run(now, now);
 	}
 
 	setCardFarmingEnabled(id: string, enabled: boolean): Account {
@@ -406,7 +443,7 @@ export class AccountStore {
 			.prepare(`
         UPDATE accounts
         SET card_farming_enabled = ?, card_farming_queue_json = '[]',
-            enabled = ?, status = ?, last_error = NULL,
+            enabled = ?, status = ?, paused_until = ?, last_error = NULL,
             revision = revision + 1, updated_at = ?
         WHERE id = ?
       `)
@@ -418,6 +455,7 @@ export class AccountStore {
 						? "online"
 						: "idle"
 					: "disabled",
+				!enabled && hasNormalPresence(account) ? account.pausedUntil : null,
 				new Date().toISOString(),
 				id,
 			);
@@ -451,7 +489,7 @@ export class AccountStore {
 				UPDATE accounts
 				SET card_farming_enabled = 1, card_farming_queue_json = ?,
 				    card_farming_exclusions_json = ?, card_farming_policy = ?, card_farming_rescan = ?,
-				    enabled = 1, status = CASE WHEN status = 'online' THEN 'online' ELSE 'idle' END,
+				    enabled = 1, paused_until = NULL, status = CASE WHEN status = 'online' THEN 'online' ELSE 'idle' END,
 				    last_error = NULL, revision = revision + 1, updated_at = ?
 				WHERE id = ?
 			`)
@@ -969,7 +1007,7 @@ export class AccountStore {
 			user_version: number;
 		};
 		const version = versionRow.user_version;
-		if (version > 12) {
+		if (version > 13) {
 			throw new Error(
 				`Database schema ${version} is newer than this version of Linger supports`,
 			);
@@ -1121,6 +1159,12 @@ export class AccountStore {
 					);
 					PRAGMA user_version = 12;
 				`);
+		}
+		if (version <= 12) {
+			this.#db.exec(`
+				ALTER TABLE accounts ADD COLUMN paused_until TEXT;
+				PRAGMA user_version = 13;
+			`);
 		}
 	}
 }

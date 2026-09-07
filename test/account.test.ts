@@ -119,6 +119,20 @@ describe("account presence", () => {
 });
 
 describe("account search", () => {
+	it("finds accounts by their paused label", () => {
+		const paused = {
+			accountName: "primary",
+			steamId: null,
+			status: "disabled" as const,
+			pausedUntil: "2030-09-10T12:00:00.000Z",
+		};
+		assert.deepEqual(filterAccountsForSearch([paused], "paused"), [paused]);
+		assert.deepEqual(
+			filterAccountsForSearch([{ ...paused, pausedUntil: null }], "paused"),
+			[],
+		);
+	});
+
 	const accounts = [
 		{
 			accountName: "primary",

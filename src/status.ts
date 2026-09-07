@@ -21,7 +21,8 @@ export type StatusAutoStop = StatusGame & {
 };
 
 export type StatusActivity = {
-	kind: RuntimeActivity["kind"];
+	kind: RuntimeActivity["kind"] | "paused";
+	pausedUntil: string | null;
 	since: string | null;
 	games: StatusGame[];
 	customGame: string | null;
@@ -123,9 +124,12 @@ function buildActivity(
 	runnerRunning: boolean,
 ): StatusActivity {
 	const activity =
-		stored?.snapshot.activity ?? fallbackActivity(account, runnerRunning);
+		account.pausedUntil !== null
+			? { kind: "paused" as const }
+			: (stored?.snapshot.activity ?? fallbackActivity(account, runnerRunning));
 	const result: StatusActivity = {
 		kind: activity.kind,
+		pausedUntil: account.pausedUntil,
 		since: stored?.snapshot.activitySince ?? null,
 		games: [],
 		customGame: null,
@@ -298,6 +302,7 @@ function sanitize(value: string): string {
 
 function activityLabel(kind: StatusActivity["kind"]): string {
 	return {
+		paused: "PAUSED",
 		disabled: "DISABLED",
 		idle: "IDLE",
 		connecting: "CONNECTING",
@@ -338,6 +343,11 @@ function activityColor(
 
 function activityDetail(account: AccountFleetStatus, now: number): string {
 	const activity = account.activity;
+	if (activity.kind === "paused" && activity.pausedUntil) {
+		return Date.parse(activity.pausedUntil) > now
+			? `Resumes in ${until(activity.pausedUntil, now)}`
+			: "Resume due · waiting for runner";
+	}
 	if (activity.kind === "boosting") {
 		const games = boostingGameLabels(activity);
 		return games.length > 0 ? games.join(", ") : "Applying presence";

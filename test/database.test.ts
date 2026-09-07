@@ -21,6 +21,123 @@ function createStore(): AccountStore {
 }
 
 describe("AccountStore", () => {
+	it("persists pauses and resumes due accounts without changing games or targets", (context) => {
+		context.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+		const directory = mkdtempSync(path.join(tmpdir(), "linger-pause-test-"));
+		temporaryDirectories.push(directory);
+		const databasePath = path.join(directory, "linger.sqlite");
+		let store = new AccountStore(databasePath);
+		try {
+			const account = store.create({
+				accountName: "paused",
+				steamId: null,
+				refreshTokenEncrypted: "encrypted",
+				machineAuthTokenEncrypted: null,
+				appIds: [730],
+				autoStopTargets: [{ appId: 730, targetMinutes: 120 }],
+				customGame: null,
+				visible: true,
+				clearRecentActivity: false,
+				cardFarmingEnabled: true,
+				autoRestart: false,
+				enabled: true,
+			});
+			const queue = [{ appId: 440, remainingDrops: 2 }];
+			store.startCardFarming(account.id, queue, [], "manual", false);
+			const until = new Date(Date.now() + 60_000).toISOString();
+			const paused = store.pauseUntil(account.id, until);
+			assert.equal(paused.enabled, false);
+			assert.equal(paused.status, "disabled");
+			store.close();
+			store = new AccountStore(databasePath);
+			assert.equal(store.get(account.id)?.pausedUntil, until);
+			context.mock.timers.tick(59_999);
+			store.resumeDueAccounts();
+			assert.equal(store.get(account.id)?.enabled, false);
+			context.mock.timers.tick(1);
+			store.resumeDueAccounts();
+			const resumed = store.get(account.id);
+			assert.ok(resumed);
+			assert.equal(resumed.enabled, true);
+			assert.equal(resumed.pausedUntil, null);
+			assert.equal(resumed.autoRestart, false);
+			assert.deepEqual(resumed.appIds, account.appIds);
+			assert.deepEqual(resumed.autoStopTargets, account.autoStopTargets);
+			assert.deepEqual(resumed.cardFarmingQueue, queue);
+			assert.equal(resumed.restartNonce, paused.restartNonce + 1);
+			store.resumeDueAccounts();
+			assert.deepEqual(store.get(account.id), resumed);
+			const later = new Date(Date.now() + 60_000).toISOString();
+			store.pauseUntil(account.id, later);
+			const stoppedFarming = store.setCardFarmingEnabled(account.id, false);
+			assert.equal(stoppedFarming.pausedUntil, later);
+			assert.equal(stoppedFarming.enabled, false);
+			const startedFarming = store.startCardFarming(
+				account.id,
+				queue,
+				[],
+				"manual",
+				false,
+			);
+			assert.equal(startedFarming.pausedUntil, null);
+			assert.equal(startedFarming.enabled, true);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("validates pause deadlines and cancels scheduled resumes on manual changes", (context) => {
+		context.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+		const store = createStore();
+		try {
+			const account = store.create({
+				accountName: "paused",
+				steamId: null,
+				refreshTokenEncrypted: "encrypted",
+				machineAuthTokenEncrypted: null,
+				appIds: [],
+				autoStopTargets: [],
+				customGame: null,
+				visible: false,
+				clearRecentActivity: false,
+				cardFarmingEnabled: true,
+				enabled: true,
+			});
+			const until = new Date(Date.now() + 60_000).toISOString();
+			for (const invalid of [
+				"invalid",
+				new Date(Date.now()).toISOString(),
+				new Date(Date.now() - 1).toISOString(),
+			]) {
+				assert.throws(
+					() => store.pauseUntil(account.id, invalid),
+					/future date and time/,
+				);
+			}
+			store.pauseUntil(account.id, until);
+			const resumed = store.setEnabled(account.id, true);
+			assert.equal(resumed.pausedUntil, null);
+			assert.equal(resumed.enabled, true);
+			store.pauseUntil(account.id, until);
+			store.setEnabled(account.id, false);
+			assert.equal(store.get(account.id)?.pausedUntil, null);
+			assert.throws(
+				() => store.pauseUntil(account.id, until),
+				/Enable this account/,
+			);
+			context.mock.timers.tick(60_000);
+			store.resumeDueAccounts();
+			assert.equal(store.get(account.id)?.enabled, false);
+			store.setEnabled(account.id, true);
+			store.pauseUntil(account.id, new Date(Date.now() + 60_000).toISOString());
+			const stopped = store.setCardFarmingEnabled(account.id, false);
+			assert.equal(stopped.enabled, false);
+			assert.equal(stopped.pausedUntil, null);
+		} finally {
+			store.close();
+		}
+	});
+
 	it("rolls back an interrupted migration and allows a clean retry", (context) => {
 		const directory = mkdtempSync(
 			path.join(tmpdir(), "linger-migration-test-"),
@@ -383,6 +500,7 @@ describe("AccountStore", () => {
 		assert.equal(store.get("id")?.awayMessage, null);
 		assert.deepEqual(store.get("id")?.autoStopTargets, []);
 		assert.equal(store.get("id")?.autoRestart, true);
+		assert.equal(store.get("id")?.pausedUntil, null);
 		assert.deepEqual(store.get("id")?.cardFarmingExclusions, []);
 		assert.equal(store.get("id")?.cardFarmingPolicy, "manual");
 		assert.equal(store.get("id")?.cardFarmingRescan, false);
@@ -395,7 +513,7 @@ describe("AccountStore", () => {
 					user_version: number;
 				}
 			).user_version,
-			12,
+			13,
 		);
 		assert.deepEqual(
 			migrated

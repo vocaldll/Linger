@@ -30,6 +30,7 @@ export type Account = {
 	cardFarmingRescan: boolean;
 	autoRestart: boolean;
 	enabled: boolean;
+	pausedUntil: string | null;
 	revision: number;
 	restartNonce: number;
 	status: AccountStatus;
@@ -54,6 +55,7 @@ export type CardFarmingPolicy = "manual" | "fewest_drops" | "least_played";
 export type NewAccount = Omit<
 	Account,
 	| "id"
+	| "pausedUntil"
 	| "awayMessage"
 	| "cardFarmingQueue"
 	| "cardFarmingExclusions"

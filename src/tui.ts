@@ -36,6 +36,7 @@ import { fetchOwnedGamesForLogin } from "./steam/game-library.js";
 import type { SteamMachineIdentity } from "./steam/machine-identity.js";
 import { cardFarmingPlanner } from "./tui/card-farming-planner.js";
 import { gamePicker } from "./tui/game-picker.js";
+import { formatPauseUntil, promptPauseUntil } from "./tui/pause-until.js";
 import { LINGER_THEME, printLingerHeader, ui } from "./tui/theme.js";
 
 const STATUS_LABELS: Record<Account["status"], string> = {
@@ -53,7 +54,8 @@ const LIBRARY_REFRESH_POLL_INTERVAL_MS = 200;
 const CARD_FARMING_SCAN_TIMEOUT_MS = 2 * 60_000;
 const CARD_FARMING_SCAN_POLL_INTERVAL_MS = 200;
 
-type SearchableAccount = Pick<Account, "accountName" | "steamId" | "status">;
+type SearchableAccount = Pick<Account, "accountName" | "steamId" | "status"> &
+	Partial<Pick<Account, "pausedUntil">>;
 
 export function filterAccountsForSearch<AccountType extends SearchableAccount>(
 	accounts: readonly AccountType[],
@@ -69,7 +71,7 @@ export function filterAccountsForSearch<AccountType extends SearchableAccount>(
 			account.accountName,
 			account.steamId ?? "",
 			account.status,
-			STATUS_LABELS[account.status],
+			account.pausedUntil ? "paused" : STATUS_LABELS[account.status],
 		]
 			.join(" ")
 			.toLocaleLowerCase();
@@ -726,8 +728,9 @@ async function promptAwayMessage(account: Account): Promise<string | null> {
 
 function accountSummary(account: Account): string {
 	const games = account.appIds.length > 0 ? account.appIds.join(", ") : "none";
-	const status =
-		account.status === "online"
+	const status = account.pausedUntil
+		? ui.accent("● paused")
+		: account.status === "online"
 			? ui.success(`● ${STATUS_LABELS[account.status]}`)
 			: account.status === "error" || account.status === "needs_auth"
 				? ui.danger(`● ${STATUS_LABELS[account.status]}`)
@@ -741,6 +744,9 @@ function accountSummary(account: Account): string {
 		"",
 		row("Steam ID", account.steamId ?? "unknown"),
 		row("Enabled", account.enabled ? "yes" : "no"),
+		account.pausedUntil
+			? row("Resumes at", formatPauseUntil(account.pausedUntil))
+			: null,
 		row("Auto Restart", account.autoRestart ? "enabled" : "disabled"),
 		row("Visibility", account.visible ? "visible" : "invisible"),
 		row(
@@ -943,7 +949,21 @@ async function manageAccount(
 					value: "cardFarming",
 				},
 				{
-					name: account.enabled ? "Disable account" : "Enable account",
+					name: account.pausedUntil
+						? "Change pause deadline"
+						: "Pause until...",
+					value: "pause",
+					disabled: !account.enabled && account.pausedUntil === null,
+				},
+				...(account.pausedUntil
+					? [{ name: "Resume now", value: "resume" }]
+					: []),
+				{
+					name: account.pausedUntil
+						? "Disable account and cancel scheduled resume"
+						: account.enabled
+							? "Disable account"
+							: "Enable account",
 					value: "toggle",
 				},
 				{
@@ -1049,9 +1069,11 @@ async function manageAccount(
 						}
 						account = store.setCardFarmingEnabled(account.id, false);
 						pauseMessage(
-							account.enabled
-								? "Card farming disabled. Normal hour boosting will resume."
-								: "Card farming disabled. The account had no boosted games and was disabled.",
+							account.pausedUntil
+								? `Card farming disabled. The account remains paused until ${formatPauseUntil(account.pausedUntil)}.`
+								: account.enabled
+									? "Card farming disabled. Normal hour boosting will resume."
+									: "Card farming disabled. The account had no boosted games and was disabled.",
 						);
 						break;
 					}
@@ -1081,8 +1103,27 @@ async function manageAccount(
 				);
 				break;
 			}
+			case "pause": {
+				const until = await promptPauseUntil();
+				if (until !== null) {
+					account = store.pauseUntil(account.id, until);
+					pauseMessage(
+						`Paused until ${formatPauseUntil(until)}. The runner will resume it automatically.`,
+					);
+				}
+				break;
+			}
+			case "resume":
+				account = store.setEnabled(account.id, true);
+				pauseMessage(
+					"Pause cancelled. The runner will resume this account shortly.",
+				);
+				break;
 			case "toggle":
-				account = store.setEnabled(account.id, !account.enabled);
+				account = store.setEnabled(
+					account.id,
+					account.pausedUntil === null && !account.enabled,
+				);
 				pauseMessage(
 					`${account.accountName} is now ${account.enabled ? "enabled" : "disabled"}.`,
 				);
@@ -1130,7 +1171,7 @@ async function chooseAccount(store: AccountStore): Promise<Account | null> {
 		source(term) {
 			return [
 				...filterAccountsForSearch(accounts, term).map((account) => ({
-					name: `${account.accountName} · ${STATUS_LABELS[account.status]} · ${account.appIds.length + (account.customGame ? 1 : 0)}/${account.clearRecentActivity ? MAX_GAMES_PLAYED - RECENT_ACTIVITY_RESERVED_SLOTS : MAX_GAMES_PLAYED} games`,
+					name: `${account.accountName} · ${account.pausedUntil ? `paused until ${formatPauseUntil(account.pausedUntil)}` : STATUS_LABELS[account.status]} · ${account.appIds.length + (account.customGame ? 1 : 0)}/${account.clearRecentActivity ? MAX_GAMES_PLAYED - RECENT_ACTIVITY_RESERVED_SLOTS : MAX_GAMES_PLAYED} games`,
 					value: account,
 					...(account.steamId
 						? { description: `SteamID: ${account.steamId}` }

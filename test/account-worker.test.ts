@@ -42,6 +42,7 @@ function account(overrides: Partial<Account> = {}): Account {
 		cardFarmingRescan: false,
 		autoRestart: true,
 		enabled: true,
+		pausedUntil: null,
 		revision: 1,
 		restartNonce: 0,
 		status: "online",

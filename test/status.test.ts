@@ -46,6 +46,31 @@ function createAccount(store: AccountStore) {
 }
 
 describe("fleet status", () => {
+	it("shows a saved pause and overdue resume even without a runner", () => {
+		const store = createStore();
+		try {
+			const account = createAccount(store);
+			const now = Date.now();
+			const until = new Date(now + 60_000).toISOString();
+			store.pauseUntil(account.id, until);
+			const fleet = buildFleetStatus(store, now);
+			assert.equal(fleet.accounts[0]?.activity.kind, "paused");
+			assert.equal(fleet.accounts[0]?.activity.pausedUntil, until);
+			for (const width of [40, 100]) {
+				const rendered = formatFleetStatus(fleet, { color: false, width });
+				assert.match(rendered, /PAUSED/);
+				assert.match(rendered, /Resumes in 1m/);
+			}
+			const overdue = formatFleetStatus(buildFleetStatus(store, now + 60_000), {
+				color: false,
+				width: 100,
+			});
+			assert.match(overdue, /Resume due/);
+		} finally {
+			store.close();
+		}
+	});
+
 	it("enriches a current boosting snapshot with names and progress", () => {
 		const store = createStore();
 		const account = createAccount(store);

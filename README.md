@@ -13,6 +13,7 @@ Linger is a terminal-based Steam hour booster and card farmer with multi-account
 - Boost multiple games, set total-hour targets, and review card-farming queues before starting
 - Configure visibility, custom game titles, away messages, and recent activity
 - Recover disconnected sessions and apply configuration changes automatically
+- Pause accounts until a chosen time and resume them automatically
 - Inspect live activity, timers, farming progress, and errors across the fleet
 - Encrypt saved session tokens with a local master key
 
@@ -87,6 +88,8 @@ Back up the data directory or Docker volume as a unit. Deleting it removes Linge
 - If an account starts playing elsewhere, Linger pauses and reconnects automatically after the game exits. Invisible accounts may take longer to detect.
 
 - Auto Restart is enabled by default per account. When disabled, a disconnected session remains stopped until you request a manual restart, re-authenticate, re-enable the account, or turn Auto Restart back on.
+
+- Pause until preserves games, hour targets, and farming queues across restarts. The runner resumes the account on its next configuration poll after the deadline. Choose Resume now to end a pause early, or disable the account to cancel the scheduled resume. Custom dates use the manager's local time zone.
 
 ## Development
 

@@ -88,6 +88,7 @@ export class Runner {
 	}
 
 	#reconcile(): void {
+		this.store.resumeDueAccounts();
 		const accounts = this.store.list();
 		const existingIds = new Set(accounts.map((account) => account.id));
 
