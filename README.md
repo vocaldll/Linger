@@ -76,7 +76,7 @@ Back up the data directory or Docker volume as a unit. Deleting it removes Linge
 
 - The card-farming planner shows Steam's reported drops alongside cached playtime. Games can be excluded, reordered manually, or sorted by fewest drops or least playtime. Exclusions are remembered per account, and the queue can optionally be rescanned after each game.
 
-- Planner scans require the runner. A disabled account connects invisibly for the scan without starting a game, then disconnects unless the reviewed queue is started.
+- Planner scans and library refreshes require the runner. A disabled account connects invisibly without starting a game, then disconnects when the requested work finishes unless the account is enabled.
 
 - Linger does not assume a fixed playtime before a card drop. [Steam lets each developer configure its game's minimum](https://partner.steamgames.com/doc/marketing/tradingcards?l=english), so the planner does not derive an ETA from a universal threshold.
 

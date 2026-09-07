@@ -490,12 +490,21 @@ async function refreshOwnedGames(
 	if (!store.hasActiveRunner()) {
 		throw new Error("Start the runner before refreshing the library.");
 	}
-	if (account.status !== "online") {
+	if (account.status === "needs_auth") {
+		throw new Error(
+			"Re-authenticate this account before refreshing its library.",
+		);
+	}
+	if (account.status === "error" && account.lastError) {
+		throw new Error(`Could not connect to Steam: ${account.lastError}`);
+	}
+	if (account.enabled && account.status !== "online") {
 		throw new Error("The Steam account must be online to refresh its library.");
 	}
 
 	const requestedNonce = store.requestLibraryRefresh(accountId);
-	const deadline = Date.now() + LIBRARY_REFRESH_TIMEOUT_MS;
+	const timeoutMs = account.enabled ? LIBRARY_REFRESH_TIMEOUT_MS : 2 * 60_000;
+	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		const refresh = store.getLibraryRefreshState(accountId);
 		if (refresh.completedNonce >= requestedNonce) {
@@ -507,10 +516,30 @@ async function refreshOwnedGames(
 				trackedPlaytimes: store.listTrackedPlaytimes(accountId),
 			};
 		}
+		const latest = store.get(accountId);
+		let failure: string | null = null;
+		if (!latest) {
+			failure = "The account was removed before the library refresh finished.";
+		} else if (latest.status === "needs_auth") {
+			failure = "Re-authenticate this account before refreshing its library.";
+		} else if (latest.status === "error") {
+			failure = latest.lastError ?? "The Steam connection failed.";
+		} else if (!store.hasActiveRunner()) {
+			failure = "The runner stopped before the library refresh finished.";
+		}
+		if (failure) {
+			store.completeLibraryRefresh(accountId, requestedNonce, failure);
+			throw new Error(failure);
+		}
 		await delay(LIBRARY_REFRESH_POLL_INTERVAL_MS);
 	}
+	store.completeLibraryRefresh(
+		accountId,
+		requestedNonce,
+		"The library refresh timed out.",
+	);
 	throw new Error(
-		"The library refresh did not finish within 30 seconds. The existing cache is still available.",
+		`The library refresh did not finish within ${timeoutMs / 1_000} seconds. The existing cache is still available.`,
 	);
 }
 

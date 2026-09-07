@@ -190,6 +190,7 @@ export class AwayMessageCooldown {
 
 export function presenceChanged(previous: Account, next: Account): boolean {
 	return (
+		previous.enabled !== next.enabled ||
 		previous.visible !== next.visible ||
 		previous.clearRecentActivity !== next.clearRecentActivity ||
 		previous.cardFarmingEnabled !== next.cardFarmingEnabled ||
@@ -290,8 +291,20 @@ export class AccountWorker {
 
 		if (!next.enabled) {
 			const cardScan = this.store.getCardFarmingScanState(next.id);
-			if (cardScan.requestedNonce > cardScan.completedNonce) {
+			const refresh = this.store.getLibraryRefreshState(next.id);
+			if (
+				cardScan.requestedNonce > cardScan.completedNonce ||
+				refresh.requestedNonce > refresh.completedNonce
+			) {
 				this.#stopHourBoosting("disabled");
+				if (this.#client && !this.#connecting) {
+					if (presenceChanged(previous, next)) {
+						this.#applyPresence();
+					}
+					if (refresh.requestedNonce > refresh.completedNonce) {
+						void this.#syncLibrary(this.#generation, this.#client, next.id);
+					}
+				}
 				const connectionBlocked =
 					next.status === "needs_auth" ||
 					(!next.autoRestart && next.status === "error");

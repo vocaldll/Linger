@@ -54,6 +54,99 @@ function account(overrides: Partial<Account> = {}): Account {
 }
 
 describe("Steam account worker", () => {
+	for (const fails of [false, true]) {
+		it(`refreshes a disabled account invisibly and disconnects after ${fails ? "failure" : "success"}`, async (context) => {
+			const store = new AccountStore(":memory:");
+			const vault = new CredentialVault("account worker test master key");
+			context.mock.method(
+				SteamUser.prototype,
+				"logOn",
+				function (this: SteamUser) {
+					Object.defineProperty(this, "steamID", {
+						value: { getSteamID64: () => "76561198000000000" },
+						configurable: true,
+					});
+					Object.defineProperty(this, "_send", {
+						value: () => {
+							throw new Error("Tracked playtime unavailable in fixture");
+						},
+					});
+					this.emit("loggedOn", {});
+				},
+			);
+			const logOff = context.mock.method(
+				SteamUser.prototype,
+				"logOff",
+				() => {},
+			);
+			const persona = context.mock.method(
+				SteamUser.prototype,
+				"setPersona",
+				() => {},
+			);
+			const gamesPlayed = context.mock.method(
+				SteamUser.prototype,
+				"gamesPlayed",
+				() => {},
+			);
+			context.mock.method(SteamUser.prototype, "getUserOwnedApps", async () => {
+				if (fails) throw new Error("Library unavailable");
+				return {
+					apps: [{ appid: 730, name: "Test game", playtime_forever: 42 }],
+				};
+			});
+			const persisted = store.create({
+				accountName: "account",
+				steamId: null,
+				refreshTokenEncrypted: vault.encrypt("refresh-token"),
+				machineAuthTokenEncrypted: null,
+				appIds: [730],
+				autoStopTargets: [],
+				customGame: null,
+				visible: true,
+				clearRecentActivity: true,
+				cardFarmingEnabled: false,
+				enabled: false,
+			});
+			const worker = new AccountWorker(
+				store,
+				vault,
+				persisted,
+				createSteamMachineIdentity("worker-test-device"),
+				"runner",
+			);
+			try {
+				const nonce = store.requestLibraryRefresh(persisted.id);
+				worker.reconcile(persisted);
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				const refresh = store.getLibraryRefreshState(persisted.id);
+				assert.equal(refresh.completedNonce, nonce);
+				assert.equal(refresh.lastError, fails ? "Library unavailable" : null);
+				assert.deepEqual(
+					store.listOwnedGames(persisted.id),
+					fails ? [] : [{ appId: 730, name: "Test game", playtimeForever: 42 }],
+				);
+				assert.equal(store.get(persisted.id)?.enabled, false);
+				assert.deepEqual(
+					persona.mock.calls.map((call) => call.arguments[0]),
+					[SteamUser.EPersonaState.Invisible],
+				);
+				assert.deepEqual(
+					gamesPlayed.mock.calls.map((call) => call.arguments[0]),
+					[[]],
+				);
+				const current = store.get(persisted.id);
+				assert.ok(current);
+				worker.reconcile(current);
+				assert.equal(logOff.mock.callCount(), 1);
+				assert.equal(store.get(persisted.id)?.status, "disabled");
+			} finally {
+				worker.stop();
+				store.close();
+			}
+		});
+	}
+
 	it("backs off when a connection attempt never completes", (context) => {
 		context.mock.timers.enable({ apis: ["setTimeout"] });
 		context.mock.method(SteamUser.prototype, "logOn", () => {});
