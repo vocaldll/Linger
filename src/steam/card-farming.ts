@@ -171,6 +171,9 @@ export class CardFarmingController {
 
 		if (latest.cardFarmingQueue.length === 0) {
 			const discovered = await this.community.discoverFarmableGames(cookies);
+			if (this.#disposed) {
+				return;
+			}
 			const current = this.store.get(latest.id);
 			if (
 				!current?.enabled ||
@@ -213,6 +216,9 @@ export class CardFarmingController {
 			cookies,
 			active.appId,
 		);
+		if (this.#disposed) {
+			return;
+		}
 		const current = this.store.get(latest.id);
 		if (
 			!current?.enabled ||
@@ -243,6 +249,9 @@ export class CardFarmingController {
 		let nextQueue = current.cardFarmingQueue.slice(1);
 		if (current.cardFarmingRescan) {
 			const discovered = await this.community.discoverFarmableGames(cookies);
+			if (this.#disposed) {
+				return;
+			}
 			const rescanned = this.store.get(current.id);
 			if (
 				!rescanned?.enabled ||

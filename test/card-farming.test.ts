@@ -89,6 +89,59 @@ function createController(
 }
 
 describe("card farming controller", () => {
+	for (const stage of ["discovery", "progress", "rescan"] as const) {
+		it(`ignores a ${stage} response after disposal`, async () => {
+			const store = createStore();
+			try {
+				const created = createAccount(store, [730]);
+				const account =
+					stage === "discovery"
+						? created
+						: store.startCardFarming(
+								created.id,
+								[{ appId: 440, remainingDrops: 1 }],
+								[],
+								"manual",
+								stage === "rescan",
+							);
+				let releaseResponse: (() => void) | undefined;
+				let reportStarted: (() => void) | undefined;
+				const response = new Promise<void>((resolve) => {
+					releaseResponse = resolve;
+				});
+				const started = new Promise<void>((resolve) => {
+					reportStarted = resolve;
+				});
+				const community: CardCommunity = {
+					async discoverFarmableGames() {
+						reportStarted?.();
+						await response;
+						return [];
+					},
+					async getRemainingDrops() {
+						if (stage === "progress") {
+							reportStarted?.();
+							await response;
+						}
+						return 0;
+					},
+				};
+				const applied: Account[] = [];
+				const controller = createController(store, account, community, applied);
+				const check = controller.checkNow();
+				await started;
+				controller.dispose();
+				releaseResponse?.();
+				await check;
+				assert.deepEqual(store.get(account.id), account);
+				assert.deepEqual(applied, []);
+				assert.equal(controller.nextCheckAt, null);
+			} finally {
+				store.close();
+			}
+		});
+	}
+
 	it("publishes one state change for each timer change", () => {
 		const store = createStore();
 		const account = createAccount(store, [730]);
