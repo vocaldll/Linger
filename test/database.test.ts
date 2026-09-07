@@ -21,6 +21,64 @@ function createStore(): AccountStore {
 }
 
 describe("AccountStore", () => {
+	it("rolls back an interrupted migration and allows a clean retry", (context) => {
+		const directory = mkdtempSync(
+			path.join(tmpdir(), "linger-migration-test-"),
+		);
+		temporaryDirectories.push(directory);
+		const databasePath = path.join(directory, "linger.sqlite");
+		const database = new DatabaseSync(databasePath);
+		database.exec(
+			"CREATE TABLE existing_data (value TEXT); INSERT INTO existing_data VALUES ('preserved');",
+		);
+		database.close();
+		const originalExec = DatabaseSync.prototype.exec;
+		const exec = context.mock.method(
+			DatabaseSync.prototype,
+			"exec",
+			function (this: DatabaseSync, sql: string) {
+				const interruptedStatement =
+					"ALTER TABLE accounts ADD COLUMN card_farming_queue_json";
+				const interruption = sql.indexOf(interruptedStatement);
+				if (interruption !== -1) {
+					originalExec.call(this, sql.slice(0, interruption));
+					throw new Error("Simulated migration interruption");
+				}
+				return originalExec.call(this, sql);
+			},
+		);
+		assert.throws(
+			() => new AccountStore(databasePath),
+			/Simulated migration interruption/,
+		);
+		exec.mock.restore();
+		const inspected = new DatabaseSync(databasePath);
+		try {
+			assert.equal(
+				inspected.prepare("PRAGMA user_version").get()?.user_version,
+				0,
+			);
+			assert.equal(
+				inspected
+					.prepare("SELECT name FROM sqlite_master WHERE name = 'accounts'")
+					.get(),
+				undefined,
+			);
+			assert.equal(
+				inspected.prepare("SELECT value FROM existing_data").get()?.value,
+				"preserved",
+			);
+		} finally {
+			inspected.close();
+		}
+		const recovered = new AccountStore(databasePath);
+		try {
+			assert.deepEqual(recovered.list(), []);
+		} finally {
+			recovered.close();
+		}
+	});
+
 	it("creates and reconfigures an account", () => {
 		const store = createStore();
 		const account = store.create({

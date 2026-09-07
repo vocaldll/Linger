@@ -209,10 +209,15 @@ export class AccountStore {
 	constructor(databasePath: string) {
 		mkdirSync(path.dirname(databasePath), { recursive: true });
 		this.#db = new DatabaseSync(databasePath);
-		this.#db.exec(
-			"PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;",
-		);
-		this.#migrate();
+		try {
+			this.#db.exec(
+				"PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;",
+			);
+			this.#migrate();
+		} catch (error) {
+			this.#db.close();
+			throw error;
+		}
 	}
 
 	close(): void {
@@ -949,6 +954,17 @@ export class AccountStore {
 	}
 
 	#migrate(): void {
+		this.#db.exec("BEGIN IMMEDIATE");
+		try {
+			this.#applyMigrations();
+			this.#db.exec("COMMIT");
+		} catch (error) {
+			this.#db.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	#applyMigrations(): void {
 		const versionRow = this.#db.prepare("PRAGMA user_version").get() as {
 			user_version: number;
 		};
@@ -959,9 +975,7 @@ export class AccountStore {
 			);
 		}
 		if (version === 0) {
-			this.#db.exec("BEGIN IMMEDIATE");
-			try {
-				this.#db.exec(`
+			this.#db.exec(`
         CREATE TABLE accounts (
           id TEXT PRIMARY KEY,
           account_name TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -982,11 +996,6 @@ export class AccountStore {
         );
         PRAGMA user_version = 1;
       `);
-				this.#db.exec("COMMIT");
-			} catch (error) {
-				this.#db.exec("ROLLBACK");
-				throw error;
-			}
 		}
 
 		if (version <= 1) {
@@ -1079,9 +1088,7 @@ export class AccountStore {
 		}
 
 		if (version <= 10) {
-			this.#db.exec("BEGIN IMMEDIATE");
-			try {
-				this.#db.exec(`
+			this.#db.exec(`
 				ALTER TABLE library_refresh_requests ADD COLUMN requested_at TEXT;
 				ALTER TABLE library_refresh_requests ADD COLUMN last_attempt_at TEXT;
 				ALTER TABLE library_refresh_requests ADD COLUMN last_success_at TEXT;
@@ -1093,17 +1100,10 @@ export class AccountStore {
 				);
 				PRAGMA user_version = 11;
 			`);
-				this.#db.exec("COMMIT");
-			} catch (error) {
-				this.#db.exec("ROLLBACK");
-				throw error;
-			}
 		}
 
 		if (version <= 11) {
-			this.#db.exec("BEGIN IMMEDIATE");
-			try {
-				this.#db.exec(`
+			this.#db.exec(`
 					ALTER TABLE accounts ADD COLUMN card_farming_exclusions_json TEXT NOT NULL DEFAULT '[]';
 					ALTER TABLE accounts ADD COLUMN card_farming_policy TEXT NOT NULL DEFAULT 'manual'
 					  CHECK (card_farming_policy IN ('manual', 'fewest_drops', 'least_played'));
@@ -1121,11 +1121,6 @@ export class AccountStore {
 					);
 					PRAGMA user_version = 12;
 				`);
-				this.#db.exec("COMMIT");
-			} catch (error) {
-				this.#db.exec("ROLLBACK");
-				throw error;
-			}
 		}
 	}
 }
