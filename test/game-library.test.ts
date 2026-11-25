@@ -249,7 +249,7 @@ describe("game library", () => {
 		});
 
 		assert.match(getScreen(), /AppID 7\s+1\D434h · manually added/u);
-		events.keypress("escape");
+		events.keypress({ name: "escape" });
 		assert.equal((await answer).action, "cancel");
 	});
 
@@ -358,7 +358,7 @@ describe("game library", () => {
 		events.keypress("down");
 		events.keypress("space");
 		assert.match(getScreen(), /at most 2 games/u);
-		events.keypress("escape");
+		events.keypress({ name: "escape" });
 		assert.equal((await answer).action, "cancel");
 	});
 

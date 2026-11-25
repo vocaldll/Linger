@@ -128,7 +128,7 @@ describe("card-farming planner", () => {
 			/AppID 40\s+2 drops · queued · playtime unavailable/u,
 		);
 		assert.match(getScreen(), /enter save queue/u);
-		events.keypress("escape");
+		events.keypress({ name: "escape" });
 		assert.equal((await answer).action, "cancel");
 	});
 
@@ -198,7 +198,7 @@ describe("card-farming planner", () => {
 			getScreen(),
 			/› \[ \] No drops\s+not farmable · no drops reported/u,
 		);
-		events.keypress("escape");
+		events.keypress({ name: "escape" });
 		assert.equal((await answer).action, "cancel");
 	});
 });
