@@ -24,3 +24,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm test
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t linger:ci .
+      - run: docker run --rm linger:ci --help
