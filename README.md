@@ -19,7 +19,7 @@ Linger is a terminal-based Steam hour booster and card farmer with multi-account
 
 ## Quick start
 
-Requires Node.js 24 or newer and pnpm 11.
+Requires Node.js 24 or newer and pnpm 12.
 
 ```sh
 pnpm install
