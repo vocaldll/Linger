@@ -1,4 +1,4 @@
-FROM node:24-trixie-slim AS build
+FROM node:25-trixie-slim AS build
 
 WORKDIR /app
 
@@ -12,7 +12,7 @@ COPY src ./src
 RUN pnpm run build \
     && pnpm prune --prod
 
-FROM node:24-trixie-slim AS runtime
+FROM node:25-trixie-slim AS runtime
 
 WORKDIR /app
 
